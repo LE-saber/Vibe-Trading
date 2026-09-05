@@ -1,3 +1,4 @@
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
@@ -5,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from vibe_trading.execution import GateError
-from vibe_trading.models import OrderStatus, Plan, canonical, digest
+from vibe_trading.models import BrokerOrder, OrderStatus, Plan, ProposedOrder, canonical, digest, now_utc
 
 
 def start(bench, plan):
@@ -92,6 +93,166 @@ def test_lost_response_after_acceptance_never_retries(planned, monkeypatch):
     bench.store.recover(); drive(bench, batch)
     assert len(calls) == 1
     assert 'FAKE_PRIVATE_TOKEN_MUST_NOT_LEAK' not in str(bench.execution.snapshot(batch))
+
+
+def test_unknown_can_only_resolve_with_exact_authoritative_evidence(planned, monkeypatch):
+    bench, plan = planned
+    original = bench.provider.submit
+    accepted = []
+    def ambiguous(order, key):
+        receipt = original(order, key)
+        accepted.append(receipt)
+        raise TimeoutError('lost response')
+    monkeypatch.setattr(bench.provider, 'submit', ambiguous)
+    batch = start(bench, plan); drive(bench, batch)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    with pytest.raises(GateError):
+        bench.execution.resolve_unknown(batch, intent['id'], 'not-an-order', 'operator log', 'owner')
+    authoritative = bench.provider.get_order
+    monkeypatch.setattr(
+        bench.provider, 'get_order',
+        lambda order_id: authoritative(order_id).model_copy(update={'client_order_id': 'another-intent'}),
+    )
+    with pytest.raises(GateError, match='authoritatively bind'):
+        bench.execution.resolve_unknown(
+            batch, intent['id'], accepted[0].order_id, 'unrelated identical order', 'owner')
+    monkeypatch.setattr(bench.provider, 'get_order', authoritative)
+    resolution = bench.execution.resolve_unknown(
+        batch, intent['id'], accepted[0].order_id, 'local authoritative order read', 'owner')
+    assert resolution.original_intent_hash == digest(ProposedOrder.model_validate(intent['body']))
+    assert resolution.record_hash == digest(resolution.model_dump(exclude={'record_hash'}))
+    resolved = bench.execution.snapshot(batch)['intents'][0]
+    assert resolved['state'] == 'SUBMITTED'
+    assert resolved['broker_order_id'] == accepted[0].order_id
+    with pytest.raises(GateError):
+        bench.execution.resolve_unknown(
+            batch, intent['id'], accepted[0].order_id, 'duplicate attempt', 'owner')
+
+
+def test_unknown_resolution_rejects_live_sending_without_read(planned, monkeypatch):
+    bench, plan = planned
+    batch = start(bench, plan)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    with bench.store.transaction() as conn:
+        conn.execute("UPDATE intents SET state='SENDING' WHERE id=?", (intent['id'],))
+    reads = []
+    monkeypatch.setattr(bench.provider, 'get_order', lambda order_id: reads.append(order_id))
+
+    with pytest.raises(GateError) as caught:
+        bench.execution.resolve_unknown(batch, intent['id'], 'broker-order', 'local exact read', 'owner')
+
+    assert caught.value.code == 'NOT_UNKNOWN'
+    assert reads == []
+
+
+def test_unknown_resolution_does_not_win_race_with_sending(planned, monkeypatch):
+    bench, plan = planned
+    original_submit = bench.provider.submit
+    accepted = []
+
+    def ambiguous(order, key):
+        receipt = original_submit(order, key)
+        accepted.append(receipt)
+        raise TimeoutError('lost response')
+
+    monkeypatch.setattr(bench.provider, 'submit', ambiguous)
+    batch = start(bench, plan)
+    bench.execution.tick(batch)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    original_read = bench.provider.get_order
+
+    def race(order_id):
+        receipt = original_read(order_id)
+        with bench.store.transaction() as conn:
+            conn.execute("UPDATE intents SET state='SENDING' WHERE id=?", (intent['id'],))
+        return receipt
+
+    monkeypatch.setattr(bench.provider, 'get_order', race)
+    with pytest.raises(GateError) as caught:
+        bench.execution.resolve_unknown(
+            batch, intent['id'], accepted[0].order_id, 'local exact read', 'owner')
+
+    assert caught.value.code == 'RESOLUTION_RACE'
+    assert bench.execution.snapshot(batch)['intents'][0]['state'] == 'SENDING'
+    assert bench.store.list('operator_resolution') == []
+
+
+def test_restart_recovery_keeps_unknown_resolution_available(planned, monkeypatch):
+    bench, plan = planned
+    batch = start(bench, plan)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    order = ProposedOrder.model_validate(intent['body'])
+    receipt = BrokerOrder(
+        order_id='restart-order', symbol=order.symbol, side=order.side,
+        quantity=order.quantity, filled_quantity=0, limit_price=order.limit_price,
+        status=OrderStatus.PENDING, updated_at=now_utc(), client_order_id=intent['id'],
+    )
+    with bench.store.transaction() as conn:
+        conn.execute("UPDATE intents SET state='SENDING' WHERE id=?", (intent['id'],))
+    bench.store.recover()
+    monkeypatch.setattr(bench.provider, 'get_order', lambda order_id: receipt)
+
+    assert bench.execution.snapshot(batch)['intents'][0]['state'] == 'UNKNOWN'
+    resolution = bench.execution.resolve_unknown(
+        batch, intent['id'], receipt.order_id, 'restart authoritative read', 'owner')
+
+    assert resolution.broker_order_id == receipt.order_id
+    assert bench.execution.snapshot(batch)['intents'][0]['state'] == 'SUBMITTED'
+
+
+def test_unknown_recovery_rejects_intent_not_bound_to_approved_plan(planned, monkeypatch):
+    bench, plan = planned
+    original = bench.provider.submit
+    accepted = []
+    def ambiguous(order, key):
+        receipt = original(order, key); accepted.append(receipt)
+        raise TimeoutError('lost response')
+    monkeypatch.setattr(bench.provider, 'submit', ambiguous)
+    batch = start(bench, plan); drive(bench, batch)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    altered = ProposedOrder.model_validate(intent['body']).model_copy(update={'reason': 'tampered'})
+    with bench.store.transaction() as conn:
+        conn.execute('UPDATE intents SET body=? WHERE id=?', (canonical(altered), intent['id']))
+    with pytest.raises(GateError) as caught:
+        bench.execution.resolve_unknown(
+            batch, intent['id'], accepted[0].order_id, 'local exact read', 'owner')
+    assert caught.value.code == 'INTENT_CHANGED'
+    assert bench.execution.snapshot(batch)['intents'][0]['state'] == 'UNKNOWN'
+
+
+def test_unknown_recovery_rejects_self_consistent_plan_substitution(planned, monkeypatch):
+    bench, plan = planned
+    original = bench.provider.submit
+    accepted = []
+    def ambiguous(order, key):
+        receipt = original(order, key); accepted.append(receipt)
+        raise TimeoutError('lost response')
+    monkeypatch.setattr(bench.provider, 'submit', ambiguous)
+    batch = start(bench, plan); drive(bench, batch)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+
+    document = bench.store.get('plan', plan.plan_id)
+    substituted = plan.model_copy(update={'warnings': plan.warnings + ('substituted plan',)})
+    document['plan'] = substituted.model_dump(mode='python')
+    document['hash'] = digest(substituted)
+    bench.store.put('plan', plan.plan_id, document)
+    assert bench.execution.plan(plan.plan_id) == substituted
+
+    reads = []
+    authoritative = bench.provider.get_order
+    def counted_read(order_id):
+        reads.append(order_id)
+        return authoritative(order_id)
+    monkeypatch.setattr(bench.provider, 'get_order', counted_read)
+    with pytest.raises(GateError) as caught:
+        bench.execution.resolve_unknown(
+            batch, intent['id'], accepted[0].order_id, 'local exact read', 'owner')
+    assert caught.value.code == 'PLAN_CHANGED'
+    assert reads == []
+    assert bench.store.list('operator_resolution') == []
+    unresolved = bench.execution.snapshot(batch)['intents'][0]
+    assert unresolved['state'] == 'UNKNOWN'
+    assert unresolved['broker_order_id'] is None
 
 
 def test_crash_before_network_send_never_replays(planned):
@@ -238,6 +399,41 @@ def test_cancel_transport_uncertainty_does_not_repeat(planned, monkeypatch):
     assert len(bench.store.list('demo_order')) == 1
 
 
+def test_existing_start_revalidates_persisted_plan_before_return(planned):
+    bench, plan = planned
+    approval = bench.execution.approve(plan.plan_id, digest(plan), 'local_owner')
+    batch = bench.execution.start(approval.approval_id)
+    document = bench.store.get('plan', plan.plan_id)
+    document['plan']['warnings'].append('tampered existing batch')
+    document['hash'] = digest(document['plan'])
+    bench.store.put('plan', plan.plan_id, document)
+
+    with pytest.raises(GateError) as caught:
+        bench.execution.start(approval.approval_id)
+
+    assert caught.value.code == 'PLAN_CHANGED'
+    assert bench.execution.snapshot(batch)['state'] == 'QUEUED'
+
+
+def test_cancel_revalidates_persisted_plan_before_mutation(planned):
+    bench, plan = planned
+    batch = start(bench, plan)
+    bench.execution.tick(batch)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    document = bench.store.get('plan', plan.plan_id)
+    document['plan']['warnings'].append('tampered cancel plan')
+    document['hash'] = digest(document['plan'])
+    bench.store.put('plan', plan.plan_id, document)
+
+    with pytest.raises(GateError) as caught:
+        bench.execution.request_cancel(batch, intent['id'])
+
+    assert caught.value.code == 'PLAN_CHANGED'
+    current = bench.execution.snapshot(batch)['intents'][0]
+    assert current['state'] == 'SUBMITTED'
+    assert current['cancel_state'] == ''
+
+
 def test_changed_plan_even_with_rehashed_document_blocks(planned):
     bench, plan = planned
     batch = start(bench, plan)
@@ -287,3 +483,135 @@ def test_replan_survives_reload_and_invalidates_unstarted_approval(planned):
     with pytest.raises(GateError):
         bench.execution.approve(plan.plan_id, digest(plan), 'local_owner')
     assert bench.store.list('demo_order') == []
+
+
+def test_legacy_approved_batch_reconciles_without_upgrading_plan_hash(planned):
+    bench, plan = planned
+    legacy_document = bench.store.get('plan', plan.plan_id)
+    legacy_document['plan']['context']['account'].pop('collected_at')
+    legacy_document['hash'] = digest(legacy_document['plan'])
+    bench.store.put('plan', plan.plan_id, legacy_document)
+    legacy_document = bench.store.get('plan', plan.plan_id)
+
+    loaded = bench.execution.plan(plan.plan_id)
+    assert loaded.context.account.collected_at == loaded.context.account.as_of
+    assert legacy_document['hash'] != digest(loaded)
+    assert bench.store.get('plan', plan.plan_id) == legacy_document
+
+    approval = bench.execution.approve(plan.plan_id, legacy_document['hash'], 'legacy_owner')
+    with bench.store.connect() as conn:
+        approval_body = conn.execute(
+            'SELECT body FROM approvals WHERE id=?', (approval.approval_id,)
+        ).fetchone()['body']
+    assert json.loads(approval_body)['plan_hash'] == legacy_document['hash']
+
+    batch = bench.execution.start(approval.approval_id)
+    bench.execution.tick(batch)
+    bench.execution.tick(batch)
+    bench.execution.tick(batch)
+    assert len(bench.store.list('demo_order')) == 2
+    assert bench.execution.snapshot(batch)['intents'][0]['receipt']['status'] == 'FILLED'
+    assert bench.store.get('plan', plan.plan_id) == legacy_document
+    with bench.store.connect() as conn:
+        assert conn.execute(
+            'SELECT body FROM approvals WHERE id=?', (approval.approval_id,)
+        ).fetchone()['body'] == approval_body
+
+    tampered = bench.store.get('plan', plan.plan_id)
+    tampered['plan']['warnings'].append('tampered')
+    tampered['hash'] = digest(tampered['plan'])
+    bench.store.put('plan', plan.plan_id, tampered)
+    bench.execution.tick(batch)
+    status = bench.execution.snapshot(batch)
+    assert status['state'] == 'PAUSED'
+    assert 'PLAN_CHANGED' in status['reason']
+    assert len(bench.store.list('demo_order')) == 2
+
+
+def test_legacy_existing_approval_must_keep_the_raw_plan_hash(planned):
+    bench, plan = planned
+    legacy_document = bench.store.get('plan', plan.plan_id)
+    legacy_document['plan']['context']['account'].pop('collected_at')
+    legacy_document['hash'] = digest(legacy_document['plan'])
+    bench.store.put('plan', plan.plan_id, legacy_document)
+
+    raw_hash = legacy_document['hash']
+    approval = bench.execution.approve(plan.plan_id, raw_hash, 'legacy_owner')
+    with bench.store.connect() as conn:
+        approval_body = json.loads(
+            conn.execute(
+                'SELECT body FROM approvals WHERE id=?', (approval.approval_id,)
+            ).fetchone()['body']
+        )
+    approval_body['plan_hash'] = digest(bench.execution.plan(plan.plan_id))
+    with bench.store.transaction() as conn:
+        conn.execute(
+            'UPDATE approvals SET body=? WHERE id=?',
+            (canonical(approval_body), approval.approval_id),
+        )
+
+    with pytest.raises(GateError, match='Approved plan failed integrity validation'):
+        bench.execution.approve(plan.plan_id, raw_hash, 'legacy_owner')
+    assert bench.store.get('plan', plan.plan_id) == legacy_document
+
+
+def test_legacy_plan_cancel_uses_the_unmodified_approved_payload(planned):
+    bench, plan = planned
+    legacy_document = bench.store.get('plan', plan.plan_id)
+    legacy_document['plan']['context']['account'].pop('collected_at')
+    legacy_document['hash'] = digest(legacy_document['plan'])
+    bench.store.put('plan', plan.plan_id, legacy_document)
+    raw_hash = legacy_document['hash']
+    approval = bench.execution.approve(plan.plan_id, raw_hash, 'legacy_owner')
+    batch = bench.execution.start(approval.approval_id)
+
+    bench.execution.tick(batch)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    bench.execution.request_cancel(batch, intent['id'])
+    status = drive(bench, batch)
+
+    assert status['state'] == 'STOPPED'
+    assert status['intents'][0]['receipt']['status'] == 'CANCELLED'
+    assert bench.store.get('plan', plan.plan_id) == legacy_document
+    with bench.store.connect() as conn:
+        assert json.loads(
+            conn.execute(
+                'SELECT body FROM approvals WHERE id=?', (approval.approval_id,)
+            ).fetchone()['body']
+        )['plan_hash'] == raw_hash
+
+
+def test_legacy_plan_unknown_recovery_keeps_the_raw_hash_binding(planned, monkeypatch):
+    bench, plan = planned
+    legacy_document = bench.store.get('plan', plan.plan_id)
+    legacy_document['plan']['context']['account'].pop('collected_at')
+    legacy_document['hash'] = digest(legacy_document['plan'])
+    bench.store.put('plan', plan.plan_id, legacy_document)
+    raw_hash = legacy_document['hash']
+    approval = bench.execution.approve(plan.plan_id, raw_hash, 'legacy_owner')
+
+    original = bench.provider.submit
+    accepted = []
+
+    def ambiguous(order, key):
+        receipt = original(order, key)
+        accepted.append(receipt)
+        raise TimeoutError('lost response')
+
+    monkeypatch.setattr(bench.provider, 'submit', ambiguous)
+    batch = bench.execution.start(approval.approval_id)
+    bench.execution.tick(batch)
+    intent = bench.execution.snapshot(batch)['intents'][0]
+    resolution = bench.execution.resolve_unknown(
+        batch, intent['id'], accepted[0].order_id, 'local exact read', 'legacy_owner'
+    )
+
+    assert resolution.broker_order_id == accepted[0].order_id
+    assert bench.execution.snapshot(batch)['intents'][0]['state'] == 'SUBMITTED'
+    assert bench.store.get('plan', plan.plan_id) == legacy_document
+    with bench.store.connect() as conn:
+        assert json.loads(
+            conn.execute(
+                'SELECT body FROM approvals WHERE id=?', (approval.approval_id,)
+            ).fetchone()['body']
+        )['plan_hash'] == raw_hash

@@ -2,7 +2,7 @@
 
 A local-first workbench connecting **research -> account-aware portfolio -> user approval -> execution -> reconciliation**, with visible research progress, competition rankings and news evidence.
 
-**Status: tested integration kernel and usable Chinese Web UI with a deterministic DEMO provider. NOT a completed ninef migration, real AI analysis, or release-ready competition-account system.** The current local research/ninef adapter must be implemented and verified on the owner's machine. No production endpoint, fee schedule, instrument rule or legacy class signature has been guessed.
+**Status: tested integration kernel, usable Chinese Web UI, and a live-read-verified ninef simulation adapter. Real research is still an explicit local plug-in and is not replaced by DEMO. External writes remain unverified and disabled.** Fee, lot, tick and tradability inputs fail closed unless a locally verified profile/API field supplies them.
 
 ## Run the offline demonstration
 
@@ -22,10 +22,9 @@ The UI shows assets, cash, holdings, own rank, top-30, source-timestamped news, 
 
 ## Integrate the CURRENT local system
 
-Read `docs/LOCAL_CODEX_TASK.md` as an implementation brief, not another requirements questionnaire. Preserve existing valid stock-selection behavior; the fixture is not a replacement strategy. Implement the seam in `examples/local_provider.py` using `ports.py` and the runtime models. The example intentionally raises `NotImplementedError`; it does not claim to be a ninef adapter.
+Read `docs/LOCAL_CODEX_TASK.md` as the implementation brief and `docs/LOCAL_INTEGRATION.md` for the implemented adapter contract. `examples/local_provider.py` now loads the strict ninef adapter. It requires `NINEF_API_TOKEN` in the local process; the token is never accepted by the Web API. `NINEF_ACCOUNT_KEY` provides a stable, credential-independent local lock identity and is mandatory before any write capability can be verified. Real analysis must be supplied separately with `VIBE_RESEARCH_PROVIDER=module:factory`. Missing research fails explicitly and never falls back to DEMO.
 
 ```bash
-# Only after implementing the local adapter:
 vibe-trading doctor --mode local --provider examples.local_provider:create_provider
 # Set a separate VIBE_UI_PASSWORD of at least 12 characters locally.
 vibe-trading serve --mode local --provider examples.local_provider:create_provider
@@ -37,7 +36,7 @@ Local-account execution is **off by default**. In addition to verified capabilit
 VIBE_ENABLE_NINEF_WRITES=I_HAVE_VERIFIED_THE_LOCAL_ADAPTER
 ```
 
-The switch is not user approval. Every batch still requires a fresh unblocked plan, exact-hash approval, an account lock and per-dispatch revalidation. Do not set it before adapter tests, legacy write-entrypoint isolation and independent review pass. An external simulation-account write is still a side effect and is not authorized by the migration task.
+The switch is not user approval. Every batch still requires a fresh unblocked plan, exact-hash approval, an account lock and per-dispatch revalidation. Adapter write capabilities also remain false unless separately verified in local configuration. Do not set any of these switches during ordinary research or migration. An external simulation-account write is still a side effect and requires separate authorization.
 
 ## Verify
 
@@ -45,6 +44,7 @@ The switch is not user approval. Every batch still requires a fresh unblocked pl
 python -m pytest -q
 python -m compileall -q src
 node --check src/vibe_trading/web/app.js
+python scripts/audit_write_entrypoints.py
 PYTHONPATH=src python scripts/export_contracts.py
 python -m pip wheel --no-deps --no-build-isolation . -w dist
 # Normal local browser/network proof:
@@ -62,7 +62,7 @@ No arbitrary buy/sell API is exposed. Missing current-holding reviews never impl
 
 Plans are immutable. Approval binds the exact plan hash, account/market/fee inputs and expiry. Refreshing a plan supersedes unstarted approvals; it does not silently stop an already running batch. Changed conditions require a new plan and consent, not invisible repricing/resizing. Durable SENDING precedes network I/O. Unknown submission outcomes retain the account lock and are never blindly retried or matched heuristically. Restart does not replay writes.
 
-This release intentionally has no button to clear UNKNOWN locks. Exact broker evidence and an audited operator-resolution flow are needed. Deleting a database is not recovery. Only loopback, one owner and one backend process are supported. The trusted local administrator can alter code/data; hashes are not digital signatures. Unrelated legacy programs are not magically prevented from trading; their drift must be detected.
+UNKNOWN locks cannot be cleared or guessed away. The recovery action requires an exact broker order read whose authoritative `client_order_id` equals the immutable local intent ID, plus an operator and evidence reference; it records a hashed `OperatorResolution` and never submits or cancels. If the broker cannot return that linkage, the lock remains. Deleting a database is not recovery. Only loopback, one owner and one backend process are supported. The trusted local administrator can alter code/data; hashes are not digital signatures. Unrelated legacy programs are not magically prevented from trading; their drift must be detected.
 
 Only source and fabricated fixtures belong in this PUBLIC repository. Never commit tokens, cookies, environment files, `ninef.db`, captures, actual account data, personal ranking details or raw provider logs. Runtime SQLite holds private activity data and is excluded from Git.
 

@@ -60,10 +60,10 @@ class DemoProvider:
             fees = FeeSchedule(version="fixture-fees-v1", commission_rate="0.0003",
                                minimum_commission="5", buy_tax_rate="0", sell_tax_rate="0.0005",
                                transfer_rate="0.00001", valid_from=today, valid_until=today,
-                               source_ref="DEMO: hypothetical fees, not a market rule")
+                               source_ref="DEMO: hypothetical fees, not a market rule", verified=True)
             return TradingContext(
                 account=AccountSnapshot(account_id="DEMO_ACCOUNT", provider="demo", as_of=now,
-                                        collection_started_at=now, total_assets=nav,
+                                        collection_started_at=now, collected_at=now, total_assets=nav,
                                         available_cash=cash, frozen_cash=frozen, positions=positions,
                                         orders=orders, orders_complete=True, consistent=True,
                                         source_ref="DEMO: synthetic local account"),
@@ -73,7 +73,7 @@ class DemoProvider:
                 rules=tuple(InstrumentRule(symbol=s, buy_lot=100, sell_lot=100,
                                            allow_odd_lot_liquidation=True, tick="0.01",
                                            valid_from=today, valid_until=today,
-                                           source_ref="DEMO: hypothetical instrument rule") for s in PRICES),
+                                           source_ref="DEMO: hypothetical instrument rule", verified=True) for s in PRICES),
                 fees=fees, market_open=True, trading_date=today)
 
     def leaderboard(self) -> Leaderboard:
@@ -111,10 +111,10 @@ class DemoProvider:
         evidence_ids = ("fixture-quant",) + tuple(n.news_id for n in news["news"])
         return ResearchResult(run_id=request.request_id, as_of=now_utc(), candidates=candidates,
                               targets=(
-                                  Target(symbol="600001.SH", weight="0.20", verdict="REDUCE", reason="DEMO: reduce existing concentration.", evidence_ids=("fixture-quant",)),
-                                  Target(symbol="000001.SZ", weight="0", verdict="EXIT", reason="DEMO: explicit exit review, not a missing target.", evidence_ids=evidence_ids),
-                                  Target(symbol="600002.SH", weight="0.25", verdict="KEEP", reason="DEMO: candidate with attached news evidence.", evidence_ids=evidence_ids),
-                                  Target(symbol="000002.SZ", weight="0.20", verdict="KEEP", reason="DEMO: diversify and retain cash reserve.", evidence_ids=("fixture-quant",))),
+                                  Target(symbol="600001.SH", name="DEMO 600001.SH", weight="0.20", verdict="REDUCE", reason="DEMO: reduce existing concentration.", evidence_ids=("fixture-quant",)),
+                                  Target(symbol="000001.SZ", name="DEMO 000001.SZ", weight="0", verdict="EXIT", reason="DEMO: explicit exit review, not a missing target.", evidence_ids=evidence_ids),
+                                  Target(symbol="600002.SH", name="DEMO 600002.SH", weight="0.25", verdict="KEEP", reason="DEMO: candidate with attached news evidence.", evidence_ids=evidence_ids),
+                                  Target(symbol="000002.SZ", name="DEMO 000002.SZ", weight="0.20", verdict="KEEP", reason="DEMO: diversify and retain cash reserve.", evidence_ids=("fixture-quant",))),
                               evidence_ids=evidence_ids, artifact_hash=digest({"fixture": "v1", "news": news}),
                               strategy_version="DEMO-NOT-AN-ALPHA-STRATEGY", news_context_hash=news["news_hash"], demo=True)
 

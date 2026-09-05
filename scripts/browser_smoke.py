@@ -62,14 +62,14 @@ def exercise(make_page, errors, offline):
     assert '117' in page.locator('#rank').inner_text()
     assert page.locator('#news-list article').count() == 3
     page.locator('#start').click()
-    page.wait_for_function("document.querySelector('#run-state').textContent==='COMPLETED'", timeout=30000)
+    page.locator('#run-state').filter(has_text='COMPLETED').wait_for(timeout=30000)
     page.locator('#orders-body tr').nth(3).wait_for()
     assert page.locator('#orders-body tr').count() == 4
     assert page.locator('#blockers').inner_text() == ''
     page.screenshot(path=str(OUT/'workbench-desktop.png'), full_page=True)
     old_hash = page.locator('#plan-hash').inner_text()
     page.locator('#refresh-plan').click()
-    page.wait_for_function("old => document.querySelector('#plan-hash').textContent !== old", arg=old_hash)
+    page.locator('#plan-hash').filter(has_not_text=old_hash).wait_for()
     plan_hash = page.locator('#plan-hash').inner_text()
     if offline:
         page.close()
@@ -79,12 +79,12 @@ def exercise(make_page, errors, offline):
     page.locator('#plan-hash').filter(has_text=plan_hash).wait_for()
     page.locator('#acknowledge').check()
     page.locator('#approve').click()
-    page.wait_for_function("document.querySelector('#batch-state').textContent==='COMPLETED'", timeout=30000)
+    page.locator('#batch-state').filter(has_text='COMPLETED').wait_for(timeout=30000)
     assert page.locator('#execution-body').inner_text().count('FILLED') == 4
     page.evaluate('window.scrollTo(0,0)')
     page.screenshot(path=str(OUT/'workbench-completed.png'), full_page=True)
     page.locator('#evidence').click()
-    page.wait_for_function("document.querySelector('#evidence-text').textContent.includes('news_hash')")
+    page.locator('#evidence-text').filter(has_text='news_hash').wait_for()
     page.locator('#close-evidence').click()
     page.set_viewport_size({'width': 390, 'height': 844})
     page.evaluate('window.scrollTo(0,0)')

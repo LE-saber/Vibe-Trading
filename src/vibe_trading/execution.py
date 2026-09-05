@@ -13,7 +13,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from .models import (
-    TERMINAL, Approval, BrokerOrder, OrderStatus, Plan, ProposedOrder, Side,
+    TERMINAL, Approval, BrokerOrder, OperatorResolution, OrderStatus, Plan, ProposedOrder, Side,
     account_state_hash, canonical, digest, now_utc,
 )
 from .planner import estimate_fee, validate_market
@@ -32,11 +32,39 @@ class ExecutionService:
     def __init__(self, store: Store, provider: Provider, enabled: bool):
         self.store, self.provider, self.enabled = store, provider, enabled
 
-    def plan(self, plan_id: str) -> Plan:
-        doc = self.store.get("plan", plan_id)
-        plan = Plan.model_validate(doc["plan"])
-        if digest(plan) != doc["hash"]:
+    def _verified_plan(self, plan_id: str, conn: sqlite3.Connection | None = None) -> tuple[Plan, str]:
+        if conn is None:
+            doc = self.store.get("plan", plan_id)
+        else:
+            row = conn.execute("SELECT body FROM documents WHERE kind='plan' AND id=?", (plan_id,)).fetchone()
+            if not row:
+                raise KeyError(plan_id)
+            doc = json.loads(row["body"])
+        raw_plan, stored_hash = doc["plan"], doc["hash"]
+        if digest(raw_plan) != stored_hash:
             raise GateError("PLAN_CORRUPTED", "Plan integrity check failed.")
+        return Plan.model_validate(raw_plan), stored_hash
+
+    def _verified_batch_plan(self, conn: sqlite3.Connection, batch_id: str) -> tuple[sqlite3.Row, Approval, Plan, str]:
+        batch = conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
+        if not batch:
+            raise KeyError(batch_id)
+        approval_row = conn.execute(
+            "SELECT id,body FROM approvals WHERE id=?", (batch["approval_id"],)
+        ).fetchone()
+        if not approval_row:
+            raise GateError("PLAN_CHANGED", "Approved plan failed integrity validation.")
+        approval = Approval.model_validate_json(approval_row["body"])
+        plan, stored_hash = self._verified_plan(batch["plan_id"], conn)
+        if (approval.approval_id != approval_row["id"] or
+                approval.approval_id != batch["approval_id"] or
+                approval.plan_id != batch["plan_id"] or
+                approval.plan_hash != stored_hash):
+            raise GateError("PLAN_CHANGED", "Approved plan failed integrity validation.")
+        return batch, approval, plan, stored_hash
+
+    def plan(self, plan_id: str) -> Plan:
+        plan, _ = self._verified_plan(plan_id)
         return plan
 
     def check_enabled(self) -> None:
@@ -48,8 +76,8 @@ class ExecutionService:
                 now: datetime | None = None) -> Approval:
         now = now or now_utc()
         self.check_enabled()
-        plan = self.plan(plan_id)
-        if digest(plan) != expected_hash:
+        plan, stored_hash = self._verified_plan(plan_id)
+        if stored_hash != expected_hash:
             raise GateError("PLAN_CHANGED", "Displayed plan does not match stored plan.")
         run = self.store.get("run", plan.run_id)
         if run["state"] != "COMPLETED":
@@ -62,12 +90,15 @@ class ExecutionService:
             raise GateError("NOT_EXECUTABLE", "Blocked or empty plan cannot be approved.")
         if now >= plan.expires_at:
             raise GateError("PLAN_EXPIRED", "Refresh the plan before approval.")
-        approval = Approval(approval_id=uuid4().hex, plan_id=plan_id, plan_hash=expected_hash,
+        approval = Approval(approval_id=uuid4().hex, plan_id=plan_id, plan_hash=stored_hash,
                             actor=actor, approved_at=now, expires_at=plan.expires_at)
         with self.store.transaction() as conn:
             row = conn.execute("SELECT body FROM approvals WHERE plan_id=?", (plan_id,)).fetchone()
             if row:
-                return Approval.model_validate_json(row[0])
+                existing = Approval.model_validate_json(row[0])
+                if existing.plan_id != plan_id or existing.plan_hash != stored_hash:
+                    raise GateError("PLAN_CHANGED", "Approved plan failed integrity validation.")
+                return existing
             conn.execute("INSERT INTO approvals VALUES(?,?,?)", (approval.approval_id, plan_id, canonical(approval)))
             self.store.event_in(conn, plan_id, "approved", approval)
         return approval
@@ -79,14 +110,16 @@ class ExecutionService:
             row = conn.execute("SELECT body FROM approvals WHERE id=?", (approval_id,)).fetchone()
             existing = conn.execute("SELECT id FROM batches WHERE approval_id=?", (approval_id,)).fetchone()
         if existing:
+            with self.store.transaction() as conn:
+                self._verified_batch_plan(conn, existing["id"])
             return existing[0]
         if not row:
             raise GateError("APPROVAL_REQUIRED", "No authenticated approval exists.")
         approval = Approval.model_validate_json(row[0])
-        plan = self.plan(approval.plan_id)
+        plan, stored_hash = self._verified_plan(approval.plan_id)
         if self.store.get("run", plan.run_id).get("plan_id") != plan.plan_id:
             raise GateError("PLAN_SUPERSEDED", "This approval belongs to a superseded plan.")
-        if digest(plan) != approval.plan_hash or now >= approval.expires_at:
+        if stored_hash != approval.plan_hash or now >= approval.expires_at:
             raise GateError("INVALID_APPROVAL", "Approval changed or expired.")
         current = self.provider.context([o.symbol for o in plan.orders])
         now = max(now, now_utc())
@@ -99,6 +132,7 @@ class ExecutionService:
         with self.store.transaction() as conn:
             existing = conn.execute("SELECT id FROM batches WHERE approval_id=?", (approval_id,)).fetchone()
             if existing:
+                self._verified_batch_plan(conn, existing["id"])
                 return existing[0]
             try:
                 conn.execute("INSERT INTO account_locks VALUES(?,?)", (current.account.account_id, batch_id))
@@ -143,6 +177,7 @@ class ExecutionService:
         if not self.provider.capabilities().cancel:
             raise GateError("CANCEL_UNAVAILABLE", "Provider cancellation is not verified.")
         with self.store.transaction() as conn:
+            self._verified_batch_plan(conn, batch_id)
             row = conn.execute("SELECT * FROM intents WHERE id=? AND batch_id=?", (intent_id, batch_id)).fetchone()
             if not row or not row["broker_order_id"] or row["state"] != "SUBMITTED":
                 raise GateError("NOT_CANCELLABLE", "Only a known open order in this batch may be cancelled.")
@@ -154,6 +189,78 @@ class ExecutionService:
             conn.execute("UPDATE intents SET cancel_state='REQUESTED' WHERE id=?", (intent_id,))
             conn.execute("UPDATE batches SET stop_requested=1 WHERE id=?", (batch_id,))
             self.store.event_in(conn, batch_id, "cancel_approved", {"intent_id": intent_id})
+
+    def resolve_unknown(self, batch_id: str, intent_id: str, broker_order_id: str,
+                        evidence_ref: str, operator: str) -> OperatorResolution:
+        """Resolve only a stable UNKNOWN intent with an exact authoritative read."""
+        batch = self.snapshot(batch_id)
+        intent = next((item for item in batch["intents"] if item["id"] == intent_id), None)
+        if intent is None or intent["state"] != "UNKNOWN":
+            raise GateError("NOT_UNKNOWN", "Only an unresolved submission may be reconciled.")
+        if not broker_order_id.strip() or not evidence_ref.strip():
+            raise GateError("RESOLUTION_EVIDENCE_REQUIRED", "Exact order ID and evidence reference are required.")
+        order = ProposedOrder.model_validate(intent["body"])
+        plan, stored_hash = self._verified_plan(batch["plan_id"])
+        with self.store.connect() as conn:
+            approval_row = conn.execute(
+                "SELECT id,body FROM approvals WHERE id=?", (batch["approval_id"],)
+            ).fetchone()
+        if not approval_row:
+            raise GateError("PLAN_CHANGED", "Approved plan failed integrity validation.")
+        approval = Approval.model_validate_json(approval_row["body"])
+        if (approval.approval_id != approval_row["id"] or
+                approval.approval_id != batch["approval_id"] or
+                approval.plan_id != batch["plan_id"] or
+                approval.plan_id != plan.plan_id or
+                approval.plan_hash != stored_hash):
+            raise GateError("PLAN_CHANGED", "Approved plan failed integrity validation.")
+        ordinal = intent["ordinal"]
+        if ordinal >= len(plan.orders) or digest(order) != digest(plan.orders[ordinal]):
+            raise GateError(
+                "INTENT_CHANGED", "Persisted intent does not match the hash-bound approved plan."
+            )
+        try:
+            receipt = self.provider.get_order(broker_order_id.strip())
+        except Exception as exc:
+            raise GateError(
+                "AUTHORITATIVE_EVIDENCE_UNAVAILABLE",
+                "Exact broker evidence could not be read; the account remains blocked.",
+            ) from exc
+        if receipt.client_order_id != intent_id:
+            raise GateError(
+                "INTENT_LINKAGE_MISSING",
+                "Broker evidence does not authoritatively bind this order to the original intent.",
+            )
+        self._match(receipt, order)
+        if receipt.order_id != broker_order_id.strip():
+            raise GateError("ORDER_ID_MISMATCH", "Authoritative receipt returned a different order ID.")
+        observed = now_utc()
+        payload = {
+            "resolution_id": uuid4().hex, "batch_id": batch_id, "intent_id": intent_id,
+            "original_intent_hash": digest(order), "broker_order_id": receipt.order_id,
+            "receipt_hash": digest(receipt), "evidence_ref": evidence_ref.strip(),
+            "operator": operator, "observed_at": observed,
+        }
+        resolution = OperatorResolution(**payload, record_hash=digest(payload))
+        with self.store.transaction() as conn:
+            current = conn.execute(
+                "SELECT state,body FROM intents WHERE id=? AND batch_id=?", (intent_id, batch_id)
+            ).fetchone()
+            if current is None or current["state"] != "UNKNOWN":
+                raise GateError("RESOLUTION_RACE", "Intent changed while evidence was being read.")
+            if digest(ProposedOrder.model_validate_json(current["body"])) != resolution.original_intent_hash:
+                raise GateError("INTENT_CHANGED", "Original intent failed integrity validation.")
+            conn.execute(
+                "UPDATE intents SET state='SUBMITTED',broker_order_id=?,receipt=? WHERE id=?",
+                (receipt.order_id, canonical(receipt), intent_id),
+            )
+            conn.execute(
+                "INSERT INTO documents(kind,id,body) VALUES('operator_resolution',?,?)",
+                (resolution.resolution_id, canonical(resolution)),
+            )
+            self.store.event_in(conn, batch_id, "unknown_resolved", resolution)
+        self._state(batch_id, "RECONCILING", "Exact broker evidence recorded; no submission was retried.")
+        return resolution
 
     def _state(self, batch_id: str, state: str, reason: str = "", *, release: bool = False) -> None:
         with self.store.transaction() as conn:
@@ -208,11 +315,11 @@ class ExecutionService:
 
     def _advance(self, batch_id: str, now: datetime) -> None:
         batch = self.snapshot(batch_id)
-        plan = self.plan(batch["plan_id"])
+        plan, stored_hash = self._verified_plan(batch["plan_id"])
         with self.store.connect() as conn:
             row = conn.execute("SELECT body FROM approvals WHERE id=?", (batch["approval_id"],)).fetchone()
         approval = Approval.model_validate_json(row[0])
-        if digest(plan) != approval.plan_hash or approval.plan_id != plan.plan_id:
+        if stored_hash != approval.plan_hash or approval.plan_id != plan.plan_id:
             raise GateError("PLAN_CHANGED", "Approved plan failed integrity validation.")
         intents = batch["intents"]
         if len(intents) != len(plan.orders) or any(

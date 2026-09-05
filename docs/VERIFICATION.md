@@ -1,18 +1,36 @@
 # Verification evidence and limits
 
-Execution date: 2026-09-05. This is implementer self-verification, not an independent review.
+Execution date: 2026-09-05. Test results below are implementer verification; a separate fresh-context read-only review was also run before delivery.
 
 ## Executed successfully
 
-- `python -m pytest -q`: **94 passed** (also rerun under coverage).
-- `python -m pytest --cov=vibe_trading --cov-report=term-missing`: **94 passed; 90% displayed statement coverage**, 1,499 statements, 146 missed. Coverage is not a safety proof and is not legacy-project coverage.
+- Original branch baseline: `python -m pytest -q`: **94 passed in 22.86 s**.
+- Local integration regression with coverage: **138 passed, 88% in 38.48 s** on a clean Python 3.12 virtual environment. The final Python 3.13 coverage run also passed **138 tests, 89% in 38.72 s**. Coverage is not a safety proof or legacy-project coverage.
 - `python -m compileall -q src tests scripts`: passed.
 - `node --check src/vibe_trading/web/app.js`: passed.
-- `PYTHONPATH=src python scripts/export_contracts.py`: exported 13 runtime schemas.
+- `PYTHONPATH=src python scripts/export_contracts.py`: exported 14 runtime schemas, including immutable `OperatorResolution` evidence.
+- `python scripts/audit_write_entrypoints.py`: passed; the three ninef write paths exist only in `adapters/ninef.py`, and provider submit/cancel calls exist only in `ExecutionService`.
 - `python -m pip wheel --no-deps --no-build-isolation --no-index . -w ...`: built installable wheel including Web assets.
-- `PYTHONPATH=src python scripts/browser_smoke.py --offline-bridge`: passed in Chromium with zero page errors. Actual HTML/JS and FastAPI executed through an in-process HTTP bridge. Checked login, top-30, own rank, news, polling progress, four-order plan, plan refresh/rehydration, consent, full batch fills, evidence viewer and 390px layout without horizontal overflow. Desktop/completed/mobile screenshots were generated and inspected.
+- `.venv/Scripts/python scripts/browser_smoke.py`: **NETWORK_BROWSER passed in 12.48 s**, zero page errors, two real SSE connections and zero external broker writes. Checked login, top-30, own rank, news, progress, plan refresh/rehydration, consent, fixture fills, evidence and 390 px layout. The fresh Windows venv exposed a missing IANA timezone dependency; adding conditional `tzdata` fixed the clean-install failure.
 
-Tested runtime: Python 3.13.5, FastAPI 0.128.2, Pydantic 2.13.4, Uvicorn 0.48.0, pytest 9.0.2, httpx 0.28.1, Playwright 1.57.0. Network package installation was unavailable; the existing environment and offline wheel builder were used.
+Tested runtime: Windows, Python 3.12 and 3.13, FastAPI 0.128.8, Pydantic 2.13.5, Uvicorn 0.48.0, pytest 9.1.1, httpx 0.28.1 and Playwright 1.62.0 with Chromium 151. Python 3.13 intermittently printed a recoverable native access-violation diagnostic despite successful exit; it did not occur in the clean Python 3.12 run.
+
+## Local ninef read verification
+
+The 2026-09-04 local ninef release source and sanitized response structure were inspected. The final live read-only doctor run completed in **3.09 s**:
+
+- account/context: `READ_AND_CONTRACT_OK`;
+- rankings: `READ_AND_CONTRACT_OK`;
+- news: `READ_AND_CONTRACT_OK`;
+- buy/sell/cancel capability flags: false;
+- write attempts: zero.
+
+Anonymous adapter tests cover cursor pagination (including cursor-only continuation), redirect rejection, exact IDs, status normalization,
+cumulative fill/fee mapping, position/cash/NAV semantics, independent own rank,
+Top 30 truncation, news symbols/timestamps, strict market-input degradation and
+single-attempt transport behavior. Provider and collection timestamps remain separate,
+with only the existing two-second clock-skew allowance. No live values, raw IDs or credentials were
+recorded in this repository.
 
 ## High-value adversarial coverage
 
@@ -22,12 +40,12 @@ SSE **server framing and Last-Event-ID replay** were tested directly. That is di
 
 ## Blocked or not executed
 
-- Networked `python scripts/browser_smoke.py`: the server started, but Chromium navigation to loopback failed with `net::ERR_BLOCKED_BY_ADMINISTRATOR`. Browser network SSE, reconnection/cookie transport must be tested locally/CI. The offline bridge did not evade or disable browser policy; it tested a separate in-process UI boundary, explicitly stubbing EventSource and exercising polling.
-- Current ninef reads/writes and current AI/research: unavailable in this environment. No credentials were requested or used; **zero external broker writes** were performed.
-- Historical zip/Codex attachments: no readable text/mount, materialization failed with 403 user_mismatch. Existing local algorithms, exact old schemas and old test counts were not verified.
-- Fresh-context independent review, Windows lock branch, full live-adapter lifecycle, current legacy write bypasses, long-run profiling, static type checker and linter: not completed here.
+- Current ninef external writes were not attempted and remain unverified/disabled.
+- The current local Vibe repository's S0-S6 route is only a loopback proxy. Its actual research implementation is not present there. The explicitly excluded project was not inspected or migrated, so a real `VIBE_RESEARCH_PROVIDER` remains required for a full non-DEMO run.
+- Live quote structure did not provide an authoritative tradability/suspension permission field. Effective fee and instrument rules also require a separately verified local market profile; no production defaults were guessed.
+- Long-run real-research profiling, static type checker and linter remain incomplete. A fresh-context Luna max read-only review found four execution/evidence boundary issues; all four were remediated, covered by regression tests and included in the final 138-test runs.
 - GitHub Actions status is reported separately in the final delivery/PR; writing a workflow file is not a claim that CI passed.
 
 ## Release gate
 
-Current level: **implemented + self-verified integration kernel/reference workflow**. Not release-ready for ninef. Local Codex must finish actual adapter/research/UI integration, real transport testing, write-entrypoint isolation and exact-evidence recovery; then an independent reviewer must approve before the local write switch is enabled. External simulation-account acceptance writes still require separate owner consent.
+Current level: **implemented + fixture-verified kernel, live-read-verified ninef facade, network-browser-verified UI**. It is not release-ready because real research, authoritative tradability/fee/rule inputs and external writes are not verified. Exact-evidence UNKNOWN recovery is implemented and tested. External simulation-account acceptance writes still require separate owner consent.

@@ -32,6 +32,15 @@ def test_incomplete_account_fails_closed(planned, field, code):
     assert code in {b.code for b in rebuild(bench, plan, context=context).blockers}
 
 
+def test_verified_but_incomplete_fee_schedule_fails_closed(planned):
+    bench, plan = planned
+    fees = plan.context.fees.model_copy(update={'commission_rate': None})
+    context = plan.context.model_copy(update={'fees': fees})
+    new = rebuild(bench, plan, context=context)
+    assert 'UNVERIFIED_FEES' in {b.code for b in new.blockers}
+    assert new.orders == ()
+
+
 @pytest.mark.parametrize('case,code', [
     ('stale_account', 'STALE_ACCOUNT'), ('collection_skew', 'SNAPSHOT_SKEW'),
     ('closed_market', 'MARKET_CLOSED'), ('stale_quote', 'STALE_QUOTE'),
@@ -72,6 +81,16 @@ def test_watch_does_not_authorize_buy(planned):
     result = ResearchResult.model_validate(bench.store.get('research_result', plan.run_id))
     result = result.model_copy(update={'targets': tuple(t.model_copy(update={'verdict': 'WATCH'}) for t in result.targets)})
     assert 'VERDICT_NOT_BUYABLE' in {b.code for b in rebuild(bench, plan, result=result).blockers}
+
+
+def test_planning_rejects_blank_target_name(planned):
+    bench, plan = planned
+    result = ResearchResult.model_validate(bench.store.get('research_result', plan.run_id))
+    invalid = result.targets[0].model_copy(update={'name': '   '})
+    result = result.model_copy(update={'targets': (invalid,) + result.targets[1:]})
+
+    with pytest.raises(ValueError, match='target name'):
+        rebuild(bench, plan, result=result)
 
 
 def test_cash_reserve_blocks_without_secret_resize(planned):

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from vibe_trading.api import WebSettings, create_app
+from vibe_trading.models import digest
 from vibe_trading.progress import Reporter
 from vibe_trading.store import ProcessLock, Store
 
@@ -161,3 +162,30 @@ def test_unhandled_provider_exception_not_re_raised_to_server_logs(planned, monk
         assert result.status_code == 503
         assert 'FAKE_AUTHORIZATION_SECRET' not in result.text
         assert 'FAKE_AUTHORIZATION_SECRET' not in caplog.text
+
+
+def test_unknown_resolution_api_requires_consent_and_exact_read(planned, monkeypatch):
+    bench, plan = planned
+    original = bench.provider.submit
+    accepted = []
+    def ambiguous(order, key):
+        receipt = original(order, key); accepted.append(receipt)
+        raise TimeoutError('lost response')
+    monkeypatch.setattr(bench.provider, 'submit', ambiguous)
+    app = create_app(bench, WebSettings('demo', start_worker=False))
+    with TestClient(app, base_url='http://localhost') as client:
+        headers = login(client)
+        approval = client.post('/api/plans/'+plan.plan_id+'/approve',
+            json={'plan_hash': digest(plan), 'acknowledge': True}, headers=headers).json()
+        batch = client.post('/api/approvals/'+approval['approval_id']+'/execute',
+                            json={}, headers=headers).json()['batch_id']
+        bench.execution.tick(batch)
+        intent = bench.execution.snapshot(batch)['intents'][0]
+        path = f"/api/batches/{batch}/intents/{intent['id']}/resolve"
+        denied = client.post(path, json={'broker_order_id': accepted[0].order_id,
+            'evidence_ref': 'local exact read', 'acknowledge': False}, headers=headers)
+        assert denied.status_code == 409
+        resolved = client.post(path, json={'broker_order_id': accepted[0].order_id,
+            'evidence_ref': 'local exact read', 'acknowledge': True}, headers=headers)
+        assert resolved.status_code == 200
+        assert resolved.json()['broker_order_id'] == accepted[0].order_id

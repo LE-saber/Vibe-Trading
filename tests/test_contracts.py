@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from vibe_trading.models import (
-    BrokerOrder, OrderStatus, Policy, Position, ResearchResult, account_state_hash,
+    BrokerOrder, OrderStatus, Policy, Position, ResearchResult, Target, account_state_hash,
     canonical, digest, now_utc,
 )
 from vibe_trading.news import review_context, select_news
@@ -106,3 +106,14 @@ def test_invented_evidence_reference_rejected(planned):
     result = bench.store.get('research_result', plan.run_id)
     result['targets'][0]['evidence_ids'] = ['invented']
     with pytest.raises(ValidationError): ResearchResult.model_validate(result)
+
+
+@pytest.mark.parametrize('name', ['', '   '])
+def test_target_name_must_be_nonblank(name):
+    with pytest.raises(ValidationError):
+        Target(symbol='600001.SH', name=name, weight='0', reason='fixture', verdict='WATCH')
+
+
+def test_target_name_is_required():
+    with pytest.raises(ValidationError):
+        Target(symbol='600001.SH', weight='0', reason='fixture', verdict='WATCH')

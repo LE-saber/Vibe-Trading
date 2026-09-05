@@ -9,16 +9,21 @@ from .models import AccountSnapshot, Blocker, OrderStatus, Policy
 
 ALIASES = {
     "PENDING": OrderStatus.PENDING, "NEW": OrderStatus.PENDING,
+    "OPEN": OrderStatus.PENDING, "UNFILLED": OrderStatus.PENDING,
     "\u5f85\u6210\u4ea4": OrderStatus.PENDING, "\u672a\u6210\u4ea4": OrderStatus.PENDING,
-    "\u5df2\u62a5": OrderStatus.PENDING,
+    "\u5df2\u62a5": OrderStatus.PENDING, "\u5df2\u63d0\u4ea4": OrderStatus.PENDING,
     "PARTIALLY_FILLED": OrderStatus.PARTIALLY_FILLED,
+    "PARTIAL": OrderStatus.PARTIALLY_FILLED,
     "\u90e8\u5206\u6210\u4ea4": OrderStatus.PARTIALLY_FILLED,
     "FILLED": OrderStatus.FILLED, "\u5df2\u6210\u4ea4": OrderStatus.FILLED,
-    "CANCEL_PENDING": OrderStatus.CANCEL_PENDING, "\u5f85\u64a4": OrderStatus.CANCEL_PENDING,
+    "CANCEL_PENDING": OrderStatus.CANCEL_PENDING, "PENDING_CANCEL": OrderStatus.CANCEL_PENDING,
+    "\u5f85\u64a4": OrderStatus.CANCEL_PENDING, "\u64a4\u5355\u4e2d": OrderStatus.CANCEL_PENDING,
+    "\u90e8\u5206\u6210\u4ea4\u5f85\u64a4": OrderStatus.CANCEL_PENDING,
     "CANCELLED": OrderStatus.CANCELLED, "CANCELED": OrderStatus.CANCELLED,
     "\u5df2\u64a4\u5355": OrderStatus.CANCELLED, "\u5df2\u64a4": OrderStatus.CANCELLED,
+    "\u90e8\u5206\u6210\u4ea4\u5df2\u64a4": OrderStatus.CANCELLED,
     "REJECTED": OrderStatus.REJECTED, "\u5e9f\u5355": OrderStatus.REJECTED,
-    "EXPIRED": OrderStatus.EXPIRED,
+    "EXPIRED": OrderStatus.EXPIRED, "\u5df2\u8fc7\u671f": OrderStatus.EXPIRED,
 }
 
 
@@ -35,7 +40,7 @@ def account_blockers(account: AccountSnapshot, now: datetime, policy: Policy,
     age = (now - account.as_of).total_seconds()
     if age < -2 or age > policy.max_snapshot_age_seconds:
         add("STALE_ACCOUNT", "Account is stale or in the future.")
-    if (account.as_of - account.collection_started_at).total_seconds() > policy.max_collection_seconds:
+    if (account.collected_at - account.collection_started_at).total_seconds() > policy.max_collection_seconds:
         add("SNAPSHOT_SKEW", "Account collection interval is too wide.")
     if not account.orders_complete:
         add("INCOMPLETE_ORDERS", "All open-order pages must be read.")

@@ -74,7 +74,7 @@ completed research + fresh account/market inputs
 
 Every persisted intent must still equal its corresponding approved order. Sell orders precede buys. Prior orders must be fully filled, with authoritative average prices and fees; portfolio quantities, available cash and order snapshots must reconcile before another submission. Prices/quantities are never silently changed after approval.
 
-A submission timeout is UNKNOWN. The lock remains; there is no automatic retry or heuristic matching by symbol/price/time. This is at-most-one automatic dispatch attempt, NOT exactly-once delivery to the broker. No manual-unlock button exists yet; an audited exact-evidence recovery process must be implemented locally.
+A submission timeout is UNKNOWN. The lock remains; there is no automatic retry or heuristic matching by symbol/price/time. This is at-most-one automatic dispatch attempt, NOT exactly-once delivery to the broker. Recovery requires an exact authoritative broker-order read whose `client_order_id` equals the immutable local intent ID, plus operator identity and an evidence reference. The resulting record binds intent and receipt hashes; when the provider cannot return that linkage, recovery stays blocked.
 
 Stop prevents future dispatch, but cannot retract a request already SENDING and does not imply cancellation. Cancellation requires separate explicit consent, is attempted once and read back. Acknowledgment is not cancellation. Restart marks research interrupted and stops further dispatch from old batches while reading known orders. No writes are replayed.
 

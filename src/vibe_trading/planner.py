@@ -14,9 +14,21 @@ ZERO = Decimal(0)
 CENT = Decimal("0.01")
 
 
+def _fee_schedule_complete(fees: FeeSchedule) -> bool:
+    return fees.verified and all(value is not None for value in (
+        fees.commission_rate,
+        fees.minimum_commission,
+        fees.buy_tax_rate,
+        fees.sell_tax_rate,
+        fees.transfer_rate,
+    ))
+
+
 def estimate_fee(notional: Decimal, side: Side, fees: FeeSchedule) -> Decimal:
     if not notional:
         return ZERO
+    if not _fee_schedule_complete(fees):
+        raise ValueError("a complete verified fee schedule is required")
     tax = fees.buy_tax_rate if side == Side.BUY else fees.sell_tax_rate
     amount = max(fees.minimum_commission, notional * fees.commission_rate)
     return (amount + notional * (tax + fees.transfer_rate)).quantize(CENT, rounding=ROUND_CEILING)
@@ -33,6 +45,8 @@ def validate_market(context: TradingContext, symbols: set[str], now: datetime,
         add("WRONG_TRADING_DATE", "Context does not belong to the current Shanghai date.")
     if not context.fees.valid_from <= context.trading_date <= context.fees.valid_until:
         add("EXPIRED_FEES", "No effective verified fee schedule.")
+    if not _fee_schedule_complete(context.fees):
+        add("UNVERIFIED_FEES", "Fee inputs are incomplete or not verified by the provider.")
     quotes, rules = {q.symbol: q for q in context.quotes}, {r.symbol: r for r in context.rules}
     for symbol in sorted(symbols):
         q, r = quotes.get(symbol), rules.get(symbol)
@@ -46,12 +60,16 @@ def validate_market(context: TradingContext, symbols: set[str], now: datetime,
             add("NOT_TRADABLE", "Instrument is suspended or not tradable.", symbol)
         if not r.valid_from <= context.trading_date <= r.valid_until:
             add("EXPIRED_RULE", "Instrument rule is not effective.", symbol)
+        if not r.verified or r.buy_lot is None or r.sell_lot is None or r.tick is None:
+            add("UNVERIFIED_RULE", "Lot and tick rules require authoritative provenance.", symbol)
     return issues
 
 
 def build_plan(result: ResearchResult, context: TradingContext, now: datetime,
                policy: Policy | None = None) -> Plan:
     policy = policy or Policy()
+    if any(not target.name.strip() for target in result.targets):
+        raise ValueError("target name must not be blank")
     positions = {p.symbol: p for p in context.account.positions if p.quantity}
     targets = {t.symbol: t for t in result.targets}
     symbols = set(positions) | set(targets)
@@ -70,6 +88,7 @@ def build_plan(result: ResearchResult, context: TradingContext, now: datetime,
     for symbol in set(positions) - set(targets):
         add("UNREVIEWED_HOLDING", "Missing holding review; never silently liquidate it.", symbol)
     quotes, rules = {q.symbol: q for q in context.quotes}, {r.symbol: r for r in context.rules}
+    fee_schedule_complete = _fee_schedule_complete(context.fees)
     nav = context.account.total_assets
     for symbol in sorted(symbols):
         target, position = targets.get(symbol), positions.get(symbol)
@@ -78,6 +97,12 @@ def build_plan(result: ResearchResult, context: TradingContext, now: datetime,
             continue
         quote, rule = quotes.get(symbol), rules.get(symbol)
         if quote is None or rule is None:
+            continue
+        if (not fee_schedule_complete or not rule.verified or rule.buy_lot is None
+                or rule.sell_lot is None or rule.tick is None):
+            target_rows.append(TargetPosition(symbol=symbol, name=target.name, current_quantity=current,
+                                             requested_quantity=current, planned_quantity=current,
+                                             weight=target.weight, reason=target.reason))
             continue
         if target.weight > policy.max_position_weight:
             add("POSITION_CAP", "Target exceeds maximum weight.", symbol)
@@ -116,12 +141,12 @@ def build_plan(result: ResearchResult, context: TradingContext, now: datetime,
             warnings.append(f"{symbol}: lot rounding leaves {planned} instead of {requested} shares.")
         if Decimal(planned) * quote.last / nav > policy.max_position_weight:
             add("POST_TRADE_POSITION_CAP", "Rounded position exceeds the cap.", symbol)
-        target_rows.append(TargetPosition(symbol=symbol, current_quantity=current,
+        target_rows.append(TargetPosition(symbol=symbol, name=target.name, current_quantity=current,
                                          requested_quantity=requested, planned_quantity=planned,
                                          weight=target.weight, reason=target.reason))
         if delta:
             side = Side.BUY if delta > 0 else Side.SELL
-            orders.append(ProposedOrder(symbol=symbol, side=side, quantity=abs(delta),
+            orders.append(ProposedOrder(symbol=symbol, name=target.name, side=side, quantity=abs(delta),
                                         limit_price=price,
                                         estimated_fee=estimate_fee(abs(delta)*price, side, context.fees),
                                         current_quantity=current, target_quantity=planned,

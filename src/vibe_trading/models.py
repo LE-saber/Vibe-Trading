@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -112,11 +112,11 @@ class Position(Contract):
 
 class BrokerOrder(Contract):
     order_id: Identifier
-    symbol: Symbol
-    side: Side
-    quantity: PositiveQty
+    symbol: Symbol | None = None
+    side: Side | None = None
+    quantity: PositiveQty | None = None
     filled_quantity: Qty
-    limit_price: Price
+    limit_price: Price | None = None
     status: OrderStatus
     average_fill_price: Price | None = None
     fee_paid: Money | None = None
@@ -125,11 +125,13 @@ class BrokerOrder(Contract):
 
     @model_validator(mode="after")
     def consistency(self) -> BrokerOrder:
-        if self.filled_quantity > self.quantity:
+        if self.quantity is not None and self.filled_quantity > self.quantity:
             raise ValueError("overfill")
-        if self.status == OrderStatus.FILLED and self.filled_quantity != self.quantity:
+        if (self.status == OrderStatus.FILLED and self.quantity is not None
+                and self.filled_quantity != self.quantity):
             raise ValueError("FILLED without full quantity")
-        if self.status == OrderStatus.PARTIALLY_FILLED and not 0 < self.filled_quantity < self.quantity:
+        if (self.status == OrderStatus.PARTIALLY_FILLED
+                and (self.quantity is None or not 0 < self.filled_quantity < self.quantity)):
             raise ValueError("invalid partial fill")
         return self
 
@@ -144,6 +146,7 @@ class AccountSnapshot(Contract):
     provider: Identifier
     as_of: Timestamp
     collection_started_at: Timestamp
+    collected_at: Timestamp
     total_assets: Price
     available_cash: Money
     frozen_cash: Money
@@ -153,14 +156,23 @@ class AccountSnapshot(Contract):
     consistent: StrictBool = False
     source_ref: str = Field(min_length=1, max_length=240)
 
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_collection_completion(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "collected_at" not in value and "as_of" in value:
+            return {**value, "collected_at": value["as_of"]}
+        return value
+
     @model_validator(mode="after")
     def consistency(self) -> AccountSnapshot:
         if len({p.symbol for p in self.positions}) != len(self.positions):
             raise ValueError("duplicate position")
         if len({o.order_id for o in self.orders}) != len(self.orders):
             raise ValueError("duplicate order")
-        if self.collection_started_at > self.as_of:
+        if self.collection_started_at > self.collected_at:
             raise ValueError("negative collection interval")
+        if self.as_of > self.collected_at + timedelta(seconds=2):
+            raise ValueError("source timestamp exceeds the allowed clock skew")
         total = self.available_cash + self.frozen_cash + sum((p.market_value for p in self.positions), Decimal(0))
         if abs(total - self.total_assets) > Decimal("0.02"):
             raise ValueError("NAV does not reconcile to cash plus positions")
@@ -199,13 +211,14 @@ class Quote(Contract):
 
 class InstrumentRule(Contract):
     symbol: Symbol
-    buy_lot: PositiveQty
-    sell_lot: PositiveQty
+    buy_lot: PositiveQty | None = None
+    sell_lot: PositiveQty | None = None
     allow_odd_lot_liquidation: StrictBool
-    tick: Price
+    tick: Price | None = None
     valid_from: date
     valid_until: date
     source_ref: str = Field(min_length=1, max_length=240)
+    verified: StrictBool = False
 
     @model_validator(mode="after")
     def dates(self) -> InstrumentRule:
@@ -216,14 +229,15 @@ class InstrumentRule(Contract):
 
 class FeeSchedule(Contract):
     version: Identifier
-    commission_rate: Weight
-    minimum_commission: Money
-    buy_tax_rate: Weight
-    sell_tax_rate: Weight
-    transfer_rate: Weight
+    commission_rate: Weight | None = None
+    minimum_commission: Money | None = None
+    buy_tax_rate: Weight | None = None
+    sell_tax_rate: Weight | None = None
+    transfer_rate: Weight | None = None
     valid_from: date
     valid_until: date
     source_ref: str = Field(min_length=1, max_length=240)
+    verified: StrictBool = False
 
     @model_validator(mode="after")
     def dates(self) -> FeeSchedule:
@@ -305,10 +319,17 @@ class ResearchRequest(Contract):
 
 class Target(Contract):
     symbol: Symbol
+    name: str = Field(min_length=1, max_length=80)
     weight: Weight
     reason: str = Field(min_length=1, max_length=1500)
     verdict: Literal["KEEP", "REDUCE", "EXIT", "WATCH", "REJECT"]
     evidence_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def nonblank_name(self) -> Target:
+        if not self.name.strip():
+            raise ValueError("target name must not be blank")
+        return self
 
 
 class ResearchResult(Contract):
@@ -353,6 +374,7 @@ class Blocker(Contract):
 
 class ProposedOrder(Contract):
     symbol: Symbol
+    name: str = Field(default="", max_length=80)
     side: Side
     quantity: PositiveQty
     limit_price: Price
@@ -364,6 +386,7 @@ class ProposedOrder(Contract):
 
 class TargetPosition(Contract):
     symbol: Symbol
+    name: str = Field(default="", max_length=80)
     current_quantity: Qty
     requested_quantity: Qty
     planned_quantity: Qty
@@ -396,3 +419,25 @@ class Approval(Contract):
     actor: Identifier
     approved_at: Timestamp
     expires_at: Timestamp
+
+
+class OperatorResolution(Contract):
+    """Immutable proof binding one UNKNOWN intent to one exact broker order."""
+
+    resolution_id: Identifier
+    batch_id: Identifier
+    intent_id: Identifier
+    original_intent_hash: Sha256
+    broker_order_id: Identifier
+    receipt_hash: Sha256
+    evidence_ref: str = Field(min_length=1, max_length=240)
+    operator: Identifier
+    observed_at: Timestamp
+    record_hash: Sha256
+
+    @model_validator(mode="after")
+    def integrity(self) -> OperatorResolution:
+        body = self.model_dump(mode="python", exclude={"record_hash"})
+        if digest(body) != self.record_hash:
+            raise ValueError("operator resolution hash mismatch")
+        return self

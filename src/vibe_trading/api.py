@@ -44,6 +44,12 @@ class AcknowledgeRequest(Contract):
     acknowledge: StrictBool
 
 
+class ResolveUnknownRequest(Contract):
+    broker_order_id: str = Field(min_length=1, max_length=160, pattern=r"^[\w.:-]+$")
+    evidence_ref: str = Field(min_length=1, max_length=240)
+    acknowledge: StrictBool
+
+
 def create_app(workbench: Workbench, settings: WebSettings) -> FastAPI:
     if not settings.demo and len(settings.password) < 12:
         raise ValueError("Local-account UI requires a password of at least 12 characters.")
@@ -230,6 +236,14 @@ def create_app(workbench: Workbench, settings: WebSettings) -> FastAPI:
             raise GateError("ACKNOWLEDGEMENT_REQUIRED", "Explicit cancellation consent is required.")
         workbench.execution.request_cancel(batch_id, intent_id)
         return {"ok": True, "status": "REQUESTED_NOT_CONFIRMED"}
+
+    @app.post("/api/batches/{batch_id}/intents/{intent_id}/resolve")
+    def resolve_unknown(batch_id: str, intent_id: str, body: ResolveUnknownRequest):
+        if not body.acknowledge:
+            raise GateError("ACKNOWLEDGEMENT_REQUIRED", "Explicit reconciliation consent is required.")
+        return response(workbench.execution.resolve_unknown(
+            batch_id, intent_id, body.broker_order_id, body.evidence_ref, "local_owner"
+        ))
 
     def valid_scope(scope: str) -> None:
         for kind in ("run", "plan"):
