@@ -1,10 +1,10 @@
 # Project execution rules
 
-Goal: one Web workflow joining stock research, visible progress, ninef account/holdings/orders, own rank/top-30, platform news in final AI review, account-aware buys/sells, explicit consent and controlled automatic execution.
+Goal: one Web workflow joining stock research, visible progress, ninef account/holdings/orders, own rank/top-30, platform news in final AI review, account-aware portfolio planning, explicit consent and controlled execution.
 
-Target source repository: LE-saber/Vibe-Trading. Do not modify the orchestrator methodology repository. Do not investigate/migrate/build on stock-competition-platform by default: the owner explicitly excluded it. Existing local Vibe-Trading is an integration source, not permission for a wholesale strategy rewrite.
+This repository is the canonical `LE-saber/Vibe-Trading` source. Do not depend on sibling checkouts or fixed local paths. `research/` is the maintained migrated research package; historical local projects are not runtime dependencies.
 
-Read docs/ARCHITECTURE.md, docs/LOCAL_CODEX_TASK.md and docs/VERIFICATION.md. Do not turn earlier assistant summaries into verified source facts. Historical uploads were unreadable in the execution environment; alleged exact old schemas/defects were not independently verified.
+Read `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/SECURITY.md` and `docs/VERIFICATION.md`. Do not turn assistant summaries into verified source facts.
 
 Credentials remain local. Never print/upload tokens, cookies, Authorization headers, raw capture databases or real account/ranking data. No external buy/sell/cancel, write-switch enablement or deployment during implementation/testing without separate explicit owner authorization. Tests default to DEMO. Do not remove blockers or assert verified capabilities merely to make the UI green.
 

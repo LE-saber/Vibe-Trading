@@ -81,9 +81,9 @@ research(request: ResearchRequest, report: Progress,
 The result must use the request run ID, report real measured stage counts, review
 both candidates and every current holding, cite only supplied evidence, and bind
 the `review_context` news hash. The ninef adapter deliberately raises when this
-backend is absent. The existing local Vibe repository exposes S0-S6 only through a
-loopback proxy; its actual pipeline is not present there, and the separately
-excluded project was not inspected or migrated.
+backend is absent. This repository supplies
+`vibe_trading.research.competition:create_backend`, which adapts the bundled
+`research/` S0-S5 implementation without a loopback proxy or another checkout.
 
 ## Execution and recovery boundary
 

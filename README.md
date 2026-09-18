@@ -1,73 +1,100 @@
-# Vibe-Trading
+# Vibe-Trading A 股比赛研究工作台
 
-A local-first workbench connecting **research -> account-aware portfolio -> user approval -> execution -> reconciliation**, with visible research progress, competition rankings and news evidence.
+这是 `LE-saber/Vibe-Trading` 的 canonical repository。仓库把原先分散的
+Competition Universe、S0–S5 因子筛选/证据/AI 复核，与账户感知的 S6
+组合规划、人工审批、订单状态机和 Web 工作台整理为一个可部署项目。
 
-**Status: tested integration kernel, usable Chinese Web UI, and a live-read-verified ninef simulation adapter. Real research is still an explicit local plug-in and is not replaced by DEMO. External writes remain unverified and disabled.** Fee, lot, tick and tradability inputs fail closed unless a locally verified profile/API field supplies them.
+默认启动是只读研究模式。真实或模拟账户的买入、卖出、撤单不会因为
+填入 token 自动开启。
 
-## Run the offline demonstration
+## 能做什么
 
-Python 3.11+; this delivery was tested with Python 3.13.5.
+- 沪深 A 股 point-in-time Universe，排除 ST、退市风险、停牌和不可交易标的；
+- `S0 全市场 → S1 300 → S2 60 → S3 20 → S4 10–15 → S5 逐股 AI 复核`；
+- Tushare 官方服务或显式配置的兼容 base URL；
+- 前复权价格与原始成交量分离，保留现有 qfq 安全检查；
+- ninef 模拟比赛账户、持仓、委托、榜单、新闻和行情只读接入；
+- 账户/费用/手数/价格限制约束下的 S6 当前→目标→差量草案；
+- 不可变计划哈希、人工批准、发送前复核、UNKNOWN 防重试和成交对账；
+- 无构建步骤的本地中文 Web UI。
 
-```bash
-python -m venv .venv
-# Windows PowerShell: .venv\Scripts\Activate.ps1
-# Linux/macOS: source .venv/bin/activate
-python -m pip install -e ".[dev]"
-vibe-trading serve --mode demo
+## 五分钟启动
+
+要求 Windows、Git 和 Python 3.13。首次运行：
+
+```powershell
+git clone git@github.com:LE-saber/Vibe-Trading.git
+cd Vibe-Trading
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+Copy-Item .env.example .env
 ```
 
-Open `http://127.0.0.1:8765`. The demonstration password is `demo`, overridable with `VIBE_UI_PASSWORD`. Start analysis, inspect buys/sells and evidence, explicitly approve, then watch accepted -> partially filled -> filled -> account reconciliation. The fixture makes no outbound network calls. Names, symbols, quotes, rules, fees, rankings, news and analysis are synthetic; they are not investment information.
+编辑 `.env`，至少填写一个长度不小于 12 的 `VIBE_UI_PASSWORD`。随后双击
+`start-vibe-trading.cmd`，或执行：
 
-The UI shows assets, cash, holdings, own rank, top-30, source-timestamped news, stage/item progress, plan/blocker review, approval, order/fill tracking, stop-future-dispatch and separately approved cancellation. Reload restores persisted state, including the latest refreshed plan. Closing a page does NOT stop an already authorized server-side batch.
-
-## Integrate the CURRENT local system
-
-Read `docs/LOCAL_CODEX_TASK.md` as the implementation brief and `docs/LOCAL_INTEGRATION.md` for the implemented adapter contract. `examples/local_provider.py` now loads the strict ninef adapter. It requires `NINEF_API_TOKEN` in the local process; the token is never accepted by the Web API. `NINEF_ACCOUNT_KEY` provides a stable, credential-independent local lock identity and is mandatory before any write capability can be verified. Real analysis must be supplied separately with `VIBE_RESEARCH_PROVIDER=module:factory`. Missing research fails explicitly and never falls back to DEMO.
-
-```bash
-vibe-trading doctor --mode local --provider examples.local_provider:create_provider
-# Set a separate VIBE_UI_PASSWORD of at least 12 characters locally.
-vibe-trading serve --mode local --provider examples.local_provider:create_provider
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
 ```
 
-Local-account execution is **off by default**. In addition to verified capabilities and a verification reference, it requires the local switch:
+浏览器打开 `http://127.0.0.1:8765`。完整真实研究还需要本地填写
+Tushare、ninef 和 S5 模型配置；字段说明见 [部署文档](docs/DEPLOYMENT.md)。
+
+如只想验证界面和安全状态机，不访问网络：
+
+```powershell
+.\.venv\Scripts\vibe-trading.exe serve --mode demo
+```
+
+DEMO 的股票、行情、费用、榜单、新闻和结果全部是合成数据，不能视为研究结论。
+
+## 日常使用
+
+1. 启动平台并登录。
+2. 确认账户、榜单、新闻读取状态。
+3. 点击开始研究，观察 S0–S5 的真实数量与进度。
+4. 查看 S6 草案中的目标权重、目标股数、差量、费用和 blocker。
+5. blocker 不为零时不得执行；更新账户/行情后重新生成计划。
+6. 计划需要人工确认精确 hash。普通启动脚本不会开放 ninef 写能力。
+
+详细流程见 [使用手册](docs/USER_GUIDE.md)。
+
+## 项目结构
 
 ```text
-VIBE_ENABLE_NINEF_WRITES=I_HAVE_VERIFIED_THE_LOCAL_ADAPTER
+src/vibe_trading/   Web/API、类型契约、S6、审批、执行与对账唯一入口
+research/           Universe、S0–S5、证据、数据源与可选研究 sidecar
+research/config/    比赛与研究参数（无凭据）
+scripts/            安装、启动、验证、安全审计
+tests/              工作台与执行边界测试
+docs/               部署、使用、架构、开发、安全和验证文档
 ```
 
-The switch is not user approval. Every batch still requires a fresh unblocked plan, exact-hash approval, an account lock and per-dispatch revalidation. Adapter write capabilities also remain false unless separately verified in local configuration. Do not set any of these switches during ordinary research or migration. An external simulation-account write is still a side effect and requires separate authorization.
+`research/` 中保留可独立测试的研究包，但根启动器不会启动它的旧执行服务；
+任何组合批准或订单动作都必须经过 `src/vibe_trading` 的 canonical contract。
 
-## Verify
+## 验证
 
-```bash
-python -m pytest -q
-python -m compileall -q src
-node --check src/vibe_trading/web/app.js
-python scripts/audit_write_entrypoints.py
-PYTHONPATH=src python scripts/export_contracts.py
-python -m pip wheel --no-deps --no-build-isolation . -w dist
-# Normal local browser/network proof:
-python -m playwright install chromium
-python scripts/browser_smoke.py
-# Explicitly limited fallback, NOT real browser SSE/cookie transport:
-PYTHONPATH=src python scripts/browser_smoke.py --offline-bridge
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-On Windows, editable installation makes `PYTHONPATH=src` unnecessary. See `docs/VERIFICATION.md` for actual results and blocked checks. A configured CI workflow is not proof that it has passed.
+单独运行：
 
-## Safety boundaries
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+Push-Location research
+..\.venv\Scripts\python.exe -m pytest -q
+Pop-Location
+```
 
-No arbitrary buy/sell API is exposed. Missing current-holding reviews never imply liquidation. WATCH/REJECT cannot authorize increased exposure. Unrelated open/partial/unknown orders block plans rather than being guessed away. Available cash and sellable shares are net resources; frozen amounts are not subtracted twice. Sale proceeds cannot fund buys until exact fills and account cash reconcile.
+当前整理基线：工作台 140 项测试；研究包收集 918 项测试。最终提交对应的
+实测结果记录在 [验证报告](docs/VERIFICATION.md)。
 
-Plans are immutable. Approval binds the exact plan hash, account/market/fee inputs and expiry. Refreshing a plan supersedes unstarted approvals; it does not silently stop an already running batch. Changed conditions require a new plan and consent, not invisible repricing/resizing. Durable SENDING precedes network I/O. Unknown submission outcomes retain the account lock and are never blindly retried or matched heuristically. Restart does not replay writes.
+## 安全
 
-UNKNOWN locks cannot be cleared or guessed away. The recovery action requires an exact broker order read whose authoritative `client_order_id` equals the immutable local intent ID, plus an operator and evidence reference; it records a hashed `OperatorResolution` and never submits or cancels. If the broker cannot return that linkage, the lock remains. Deleting a database is not recovery. Only loopback, one owner and one backend process are supported. The trusted local administrator can alter code/data; hashes are not digital signatures. Unrelated legacy programs are not magically prevented from trading; their drift must be detected.
+不要提交 `.env`、token、Cookie、Authorization header、账户导出、抓包、
+数据库、`runs/`、`data/`、`storage/` 或模型原始响应。普通启动脚本会清空
+`VIBE_ENABLE_NINEF_WRITES`，因此只能研究和生成草案。写能力必须在单独的、
+经过本地验证的操作流程中显式启用，且仍需计划 hash 与人工确认。
 
-Only source and fabricated fixtures belong in this PUBLIC repository. Never commit tokens, cookies, environment files, `ninef.db`, captures, actual account data, personal ranking details or raw provider logs. Runtime SQLite holds private activity data and is excluded from Git.
-
-## Structure
-
-`models.py` contains versioned contracts; `planner.py` computes current/target/delta with fees and constraints; `reconciliation.py` normalizes order states; `execution.py` enforces approval and durable dispatch; `progress.py` records real work; `news.py` selects untrusted evidence; `service.py` joins research and cheap fresh-account replanning; `ports.py` isolates local integrations; `store.py` persists tasks/events/intents; `api.py` and `cli.py` serve the loopback application; `web/` is a build-free Chinese reference interface.
-
-The independent decisions and product acceptance matrix are in `docs/ARCHITECTURE.md`. `stock-competition-platform` is excluded from implementation scope. The orchestrator methodology repository remains read-only.
+参见 [安全边界](docs/SECURITY.md) 和 [架构](docs/ARCHITECTURE.md)。
