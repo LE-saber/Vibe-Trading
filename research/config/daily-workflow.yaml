@@ -1,0 +1,39 @@
+version: v1
+timezone: Asia/Shanghai
+schedule:
+  preflight_start: "08:45"
+  preopen_start: "09:00"
+  preopen_end: "09:25"
+  intraday_checkpoints:
+    - "09:35"
+    - "10:30"
+    - "11:25"
+    - "13:05"
+    - "13:35"
+    - "14:15"
+    - "14:35"
+  execution_target: "14:50"
+  ordinary_order_cutoff: "14:57"
+  postclose_start: "15:05"
+  leaderboard_checkpoints:
+    - preopen
+    - midday
+    - tail
+    - postclose
+risk:
+  max_positions: 8
+  max_single_weight: 0.20
+  cash_ratio_min: 0.10
+  cash_ratio_max: 0.20
+  max_sector_weight: 0.40
+  max_pair_correlation: 0.85
+  max_quote_age_seconds: 60
+  opening_gap_max: 0.04
+  current_change_min: -0.04
+  buy_lot: 100
+execution:
+  mode: MANUAL_CONFIRM
+  automatic_orders: false
+  unknown_policy: AUTHORITATIVE_READBACK_NEVER_RETRY
+  require_complete_order_history: true
+  require_zero_open_orders_before_replan: true

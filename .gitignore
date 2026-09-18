@@ -6,6 +6,11 @@ __pycache__/
 .env
 .env.*
 !.env.example
+*token*.txt
+*TOKEN*.env
+account*.json
+account*.md
+acceptance-report*
 *.db
 *.db-*
 *.sqlite*
@@ -24,3 +29,9 @@ test-results/
 coverage.json
 htmlcov/
 schemas/
+.local/
+research/data/
+research/runs/
+research/storage/
+research/.venv/
+research/services/*/.venv/

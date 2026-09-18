@@ -1,0 +1,60 @@
+version: v1.4
+dataset:
+  warmup_sessions: 120
+  minimum_history_sessions: 60
+  minimum_full_history_ratio: 0.90
+stages:
+  s1_top_n: 300
+  s2_top_n: 60
+  s3_top_n: 20
+  s4_target_n: 12
+score:
+  trend: 0.25
+  momentum: 0.25
+  relative_strength: 0.15
+  liquidity: 0.15
+  volatility_quality: 0.10
+  data_quality: 0.10
+screening:
+  benchmark_symbol: 000300.SH
+  limit_lookback_sessions: 5
+  technical_timeout_seconds: 180
+  minimum_available_weight: 0.60
+evidence:
+  lookback_sessions: 5
+  quant_weight: 0.85
+  flow_weight: 0.10
+  quality_weight: 0.05
+  minimum_data_confidence: 0.50
+risk:
+  corr_threshold: 0.85
+  correlation_sessions: 60
+  min_pair_observations: 40
+  max_positions: 8
+  min_positions: 5
+  cash_buffer: 0.20
+  single_name_cap: 0.20
+  max_candidates_per_cluster: 2
+  max_candidates_per_sector: 3
+  max_overheated_candidates: 6
+  overheat_threshold: 80.0
+ai:
+  concurrency: 3
+  max_attempts: 2
+  timeout_seconds: 180
+  packet_max_chars: 4000
+  reasoning_effort: none
+  max_output_tokens: 4096
+realtime:
+  max_quote_age_seconds: 60
+  max_drawdown_from_high: 0.06
+  max_gap: 0.08
+portfolio:
+  core_share: 0.70
+  aggressive_share: 0.30
+  slippage_buffer: 0.005
+  account_max_age_seconds: 900
+  execution_mode: MANUAL_CONFIRM
+shadow:
+  qlib: false
+  trading_agents: false

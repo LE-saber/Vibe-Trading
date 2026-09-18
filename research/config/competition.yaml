@@ -1,0 +1,57 @@
+competition:
+  start_date: "2026-08-31"
+  end_date: "2026-09-30"
+  advertised_trading_days: 23
+  initial_capital: 1000000
+  trading_market: "CN_A"
+  exchanges:
+    - "SSE"
+    - "SZSE"
+  allowed_boards:
+    - "main"
+    - "chinext"
+    - "star"
+  default_cash_ratio: 0.10
+  snapshot_phase: "postclose"
+  universe_exclusions:
+    st: true
+    delisting_risk: true
+    suspended: true
+    untradeable: true
+  leaderboard:
+    top_n: 30
+    show_own_rank: true
+    ranking:
+      - metric: "total_assets"
+        direction: "descending"
+      - metric: "trade_win_rate"
+        direction: "descending"
+      - metric: "trade_count"
+        direction: "descending"
+      - metric: "max_drawdown"
+        direction: "ascending"
+  board_rules:
+    main:
+      normal_price_limit: 0.10
+      st_price_limit: 0.05
+      new_listing_special_sessions: 5
+    chinext:
+      normal_price_limit: 0.20
+      st_price_limit: 0.05
+      new_listing_special_sessions: 5
+    star:
+      normal_price_limit: 0.20
+      st_price_limit: 0.05
+      new_listing_special_sessions: 5
+  candidate_limits:
+    universe: 6000
+    shortlist: 20
+    deep_analysis: 8
+  portfolio:
+    max_single_weight: 0.20
+    max_slippage_pct: 0.005
+    max_quote_age_seconds: 60
+    execution_mode: "MANUAL_CONFIRM"
+
+runtime:
+  endpoint: "http://127.0.0.1:8910"
