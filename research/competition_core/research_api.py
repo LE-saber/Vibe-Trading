@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, Request, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from competition_core.pipeline.errors import PipelineError
 from competition_core.pipeline.time_context import SHANGHAI
@@ -143,6 +143,22 @@ class UnknownResolutionRequest(BaseModel):
     evidence_ref: str
 
 
+class TerminalEvaluateRequest(BaseModel):
+    """Explicit, bounded input for a read-only terminal evaluation.
+
+    The client cannot supply competition dates, award rules, a mode override,
+    prices, quantities, or any order payload.  ``previous_mode`` is only the
+    state-machine continuity fact and is checked against the latest persisted
+    evaluation before it reaches the runtime.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    core_symbols: list[StrictStr] | None = None
+    same_day_exit_unavailable_symbols: list[StrictStr] | None = None
+    previous_mode: StrictStr | None = None
+    downgrade_confirmation_count: StrictInt = Field(default=0, ge=0, le=10)
+
+
 def get_execution_service():
     from competition_core.execution.runtime import get_execution_service as factory
     return factory()
@@ -219,6 +235,162 @@ def daily_workflow():
         "approval_required": True,
         "orders_submitted": 0,
     }
+
+
+def _terminal_stage_bundle(tasks, run_id: str):
+    """Load only checked, repository-verified terminal source stages."""
+
+    from competition_core.pipeline.persistence import PipelineRepository
+
+    directory = checked_directory(tasks.root, run_id)
+    repository = PipelineRepository(directory.parent, run_id)
+    stages = {}
+    for stage in ("S4", "S5", "S5_5"):
+        value = repository.load_stage(stage)
+        if value is None:
+            raise PipelineError("NOT_READY", "terminal source stage is unavailable", stage=stage)
+        stages[stage] = value
+    return directory, stages
+
+
+def _terminal_now(tasks) -> datetime:
+    clock = getattr(tasks, "clock", None)
+    value = clock() if callable(clock) else datetime.now(SHANGHAI)
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise PipelineError("INVALID_ARGUMENTS", "terminal evaluation time must be timezone-aware")
+    return value
+
+
+def _latest_terminal_for_input(tasks, run_id: str):
+    from competition_core.terminal_strategy.api_views import latest_persisted
+
+    try:
+        return latest_persisted(tasks.root, run_id)
+    except PipelineError as exc:
+        if exc.code == "NOT_FOUND":
+            return None
+        raise
+
+
+def _previous_terminal_mode(tasks, run_id: str, requested: str | None):
+    from competition_core.terminal_strategy import TerminalMode
+
+    latest = _latest_terminal_for_input(tasks, run_id)
+    latest_mode = None
+    if latest is not None:
+        latest_mode = latest["artifacts"]["mode-decision.json"].get("mode")
+        try:
+            latest_mode = TerminalMode(latest_mode)
+        except (TypeError, ValueError) as exc:
+            raise PipelineError("STALE_DATA", "latest terminal mode is invalid") from exc
+    if requested is None:
+        return latest_mode
+    try:
+        requested_mode = TerminalMode(requested)
+    except (TypeError, ValueError) as exc:
+        raise PipelineError("INVALID_ARGUMENTS", "previous terminal mode is invalid") from exc
+    if latest_mode is None or requested_mode is not latest_mode:
+        raise PipelineError("INVALID_ARGUMENTS", "previous terminal mode does not match latest evaluation")
+    return requested_mode
+
+
+@router.post("/runs/{run_id}/terminal/evaluate")
+@safe_api
+def terminal_evaluate(
+    run_id: str,
+    body: TerminalEvaluateRequest,
+    tasks=Depends(get_tasks),
+    account_reader=Depends(get_ninef_account_reader),
+    leaderboard_reader=Depends(get_ninef_leaderboard_reader),
+):
+    """Evaluate terminal strategy facts without exposing any write capability."""
+
+    from competition_core.terminal_strategy import load_terminal_strategy_config
+    from competition_core.terminal_strategy.api_views import decision_projection
+    from competition_core.terminal_strategy.runtime import run_terminal_runtime
+
+    _, stages = _terminal_stage_bundle(tasks, run_id)
+    config = load_terminal_strategy_config()
+    previous_mode = _previous_terminal_mode(tasks, run_id, body.previous_mode)
+    account_view = account_reader()
+    leaderboard_view = leaderboard_reader()
+    runtime = run_terminal_runtime(
+        run_id,
+        stages["S4"],
+        stages["S5"],
+        stages["S5_5"],
+        account_view,
+        leaderboard_view,
+        _terminal_now(tasks),
+        config,
+        tasks.root,
+        previous_mode=previous_mode,
+        downgrade_confirmation_count=body.downgrade_confirmation_count,
+        same_day_exit_unavailable_symbols=body.same_day_exit_unavailable_symbols,
+        core_symbols=body.core_symbols,
+    )
+    if runtime.evaluation is None or runtime.path is None:
+        if runtime.diagnostics.persistence_error:
+            raise PipelineError("STALE_DATA", "terminal evaluation could not be immutably persisted")
+        code = "NOT_READY" if runtime.status == "BLOCKED" else "SOURCE_UNAVAILABLE"
+        raise PipelineError(code, "terminal evaluation is unavailable")
+    response = decision_projection(runtime.evaluation)
+    response["diagnostics"] = {
+        "blockers": list(runtime.diagnostics.blockers),
+        "reasons": list(runtime.diagnostics.reasons),
+    }
+    return response
+
+
+@router.get("/runs/{run_id}/terminal/decision")
+@safe_api
+def terminal_decision(
+    run_id: str,
+    evaluation_id: str | None = Query(None),
+    tasks=Depends(get_tasks),
+):
+    checked_directory(tasks.root, run_id)
+    from competition_core.terminal_strategy.api_views import load_persisted, persisted_decision_projection
+    return persisted_decision_projection(load_persisted(tasks.root, run_id, evaluation_id))
+
+
+@router.get("/runs/{run_id}/terminal/candidates")
+@safe_api
+def terminal_candidates(
+    run_id: str,
+    tier: str = Query("watch"),
+    evaluation_id: str | None = Query(None),
+    tasks=Depends(get_tasks),
+):
+    checked_directory(tasks.root, run_id)
+    from competition_core.terminal_strategy.api_views import load_persisted, persisted_candidates_projection
+    loaded = load_persisted(tasks.root, run_id, evaluation_id)
+    return persisted_candidates_projection(loaded, tier)
+
+
+@router.get("/runs/{run_id}/terminal/history")
+@safe_api
+def terminal_history(
+    run_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    tasks=Depends(get_tasks),
+):
+    checked_directory(tasks.root, run_id)
+    from competition_core.terminal_strategy.api_views import persisted_history
+    return {
+        "schema_version": "competition.terminal-history-view.v1",
+        "run_id": run_id,
+        "history": persisted_history(tasks.root, run_id, limit),
+        "execution_ready": False,
+        "orders_submitted": 0,
+    }
+
+
+@router.get("/terminal/status")
+@safe_api
+def terminal_status(tasks=Depends(get_tasks)):
+    from competition_core.terminal_strategy.api_views import status_projection
+    return status_projection(tasks.root)
 
 
 @router.get("/runs/{run_id}")
