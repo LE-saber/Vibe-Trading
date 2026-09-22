@@ -309,7 +309,7 @@ def _parse_funnel(value: Any) -> FunnelConfig:
     watch = _integer(value["watch_count"], "funnel.watch_count", 1, 100)
     focus = _integer(value["focus_count"], "funnel.focus_count", 1, watch)
     terminal_min = _integer(value["terminal_count_min"], "funnel.terminal_count_min", 2, focus)
-    terminal_max = _integer(value["terminal_count_max"], "funnel.terminal_count_max", terminal_min, focus)
+    terminal_max = _integer(value["terminal_count_max"], "funnel.terminal_count_max", terminal_min, 3)
     continuity = _integer(value["continuity_sessions"], "funnel.continuity_sessions", 1, 100)
     liquidity = _number(value["minimum_liquidity_score"], "funnel.minimum_liquidity_score", Decimal("0"), Decimal("100"))
     drawdown = _rate(value["maximum_intraday_drawdown"], "funnel.maximum_intraday_drawdown")
@@ -357,9 +357,33 @@ def _parse_allocation(value: Any) -> AllocationConfig:
         raise TerminalStrategyConfigError("last-shot aggressive cap cannot be below attack cap")
     if parsed["last_shot_aggressive_cap"] > Decimal("0.60"):
         raise TerminalStrategyConfigError("aggressive cap cannot exceed three 20% terminal candidates")
-    for name in ("protect_cash_target", "normal_cash_target", "attack_cash_target", "last_shot_cash_target"):
-        if parsed[name] < Decimal("0.10"):
-            raise TerminalStrategyConfigError(f"allocation.{name} cannot be below the 10% cash floor")
+    if parsed["protect_aggressive_cap"] > Decimal("0.10"):
+        raise TerminalStrategyConfigError("Protect aggressive cap cannot exceed 10%")
+    if not Decimal("0.20") <= parsed["normal_aggressive_target"] <= Decimal("0.40"):
+        raise TerminalStrategyConfigError("Normal aggressive target must be between 20% and 40%")
+    if not Decimal("0.40") <= parsed["attack_aggressive_min"] <= Decimal("0.60"):
+        raise TerminalStrategyConfigError("Attack aggressive minimum must be between 40% and 60%")
+    if not Decimal("0.40") <= parsed["attack_aggressive_max"] <= Decimal("0.60"):
+        raise TerminalStrategyConfigError("Attack aggressive maximum must be between 40% and 60%")
+    if parsed["last_shot_aggressive_cap"] < parsed["attack_aggressive_max"]:
+        raise TerminalStrategyConfigError("Last-shot aggressive cap cannot be below Attack maximum")
+    if parsed["protect_cash_target"] < Decimal("0.20"):
+        raise TerminalStrategyConfigError("Protect cash target must be at least 20%")
+    if not Decimal("0.15") <= parsed["normal_cash_target"] <= Decimal("0.20"):
+        raise TerminalStrategyConfigError("Normal cash target must be between 15% and 20%")
+    if not Decimal("0.10") <= parsed["attack_cash_target"] <= Decimal("0.15"):
+        raise TerminalStrategyConfigError("Attack cash target must be between 10% and 15%")
+    if parsed["last_shot_cash_target"] < Decimal("0.10"):
+        raise TerminalStrategyConfigError("Last-shot cash target must be at least 10%")
+    budget_pairs = (
+        ("Protect", "protect_aggressive_cap", "protect_cash_target"),
+        ("Normal", "normal_aggressive_target", "normal_cash_target"),
+        ("Attack", "attack_aggressive_max", "attack_cash_target"),
+        ("Last-shot", "last_shot_aggressive_cap", "last_shot_cash_target"),
+    )
+    for label, aggressive_name, cash_name in budget_pairs:
+        if parsed[aggressive_name] + parsed[cash_name] > Decimal("1"):
+            raise TerminalStrategyConfigError(f"{label} aggressive and cash budgets exceed 100%")
     if parsed["new_listing_final_day_cap"] > Decimal("0.20"):
         raise TerminalStrategyConfigError("new-listing final-day cap cannot exceed the 20% single-name limit")
     return AllocationConfig(**parsed)

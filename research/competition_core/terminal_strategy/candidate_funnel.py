@@ -255,6 +255,10 @@ class CandidateAssessment:
     limit_price: Decimal | None
     max_weight: Decimal | None
     observation_hash: str
+    # A small, provider-neutral risk vocabulary retained for downstream
+    # research components.  These are facts/labels only; they do not turn a
+    # candidate into a broker instruction or position size.
+    risk_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, TerminalMode):
@@ -275,6 +279,10 @@ class CandidateAssessment:
             raise CandidateFunnelError("assessment blockers must be typed")
         if not isinstance(self.warnings, tuple) or not all(isinstance(item, str) and item for item in self.warnings):
             raise CandidateFunnelError("assessment warnings must be non-empty strings")
+        if not isinstance(self.risk_tags, tuple) or not all(
+            isinstance(item, str) and item for item in self.risk_tags
+        ):
+            raise CandidateFunnelError("assessment risk_tags must be non-empty strings")
         for name in ("trigger_price", "invalidation_price", "limit_price", "max_weight"):
             value = getattr(self, name)
             if value is not None:
@@ -298,6 +306,7 @@ class CandidateAssessment:
             "limit_price": _json_value(self.limit_price),
             "max_weight": _json_value(self.max_weight),
             "observation_hash": self.observation_hash,
+            "risk_tags": list(self.risk_tags),
         }
 
 
@@ -401,7 +410,13 @@ def build_candidate_funnel(
     })
     if selected_mode is TerminalMode.UNAVAILABLE:
         assessments = tuple(sorted(
-            (_blocked_assessment(item, selected_mode, (CandidateBlocker.MODE_UNAVAILABLE,)) for item in items),
+            (
+                _blocked_assessment(
+                    item, selected_mode, (CandidateBlocker.MODE_UNAVAILABLE,),
+                    overheat_threshold=config.funnel.overheat_score_threshold,
+                )
+                for item in items
+            ),
             key=_assessment_sort_key,
         ))
         return _result(
@@ -419,11 +434,21 @@ def build_candidate_funnel(
         if duplicate:
             blockers.append(CandidateBlocker.DUPLICATE_SYMBOL)
         if blockers:
-            assessments.append(_assessment(item, selected_mode, None, {}, {}, blockers, warnings, False, False))
+            assessments.append(
+                _assessment(
+                    item, selected_mode, None, {}, {}, blockers, warnings, False, False,
+                    overheat_threshold=config.funnel.overheat_score_threshold,
+                )
+            )
             continue
         score, components, penalties, score_warnings = _score(item, items, config, selected_mode)
         warnings.extend(score_warnings)
-        assessments.append(_assessment(item, selected_mode, score, components, penalties, (), warnings, True, False))
+        assessments.append(
+            _assessment(
+                item, selected_mode, score, components, penalties, (), warnings, True, False,
+                overheat_threshold=config.funnel.overheat_score_threshold,
+            )
+        )
 
     ordered = sorted(assessments, key=_assessment_sort_key)
     eligible = [item for item in ordered if item.hard_gate_pass]
@@ -661,6 +686,8 @@ def _assessment(
     warnings: Iterable[str],
     hard_gate_pass: bool,
     terminal_eligible: bool,
+    *,
+    overheat_threshold: Decimal = Decimal("80"),
 ) -> CandidateAssessment:
     return CandidateAssessment(
         symbol=item.symbol,
@@ -678,11 +705,46 @@ def _assessment(
         limit_price=item.limit_price,
         max_weight=item.max_weight,
         observation_hash=item.observation_hash,
+        risk_tags=_risk_tags(item, overheat_threshold),
     )
 
 
-def _blocked_assessment(item: CandidateObservation, mode: TerminalMode, blockers: Iterable[CandidateBlocker]) -> CandidateAssessment:
-    return _assessment(item, mode, None, {}, {}, blockers, (), False, False)
+def _blocked_assessment(
+    item: CandidateObservation,
+    mode: TerminalMode,
+    blockers: Iterable[CandidateBlocker],
+    *,
+    overheat_threshold: Decimal = Decimal("80"),
+) -> CandidateAssessment:
+    return _assessment(
+        item, mode, None, {}, {}, blockers, (), False, False,
+        overheat_threshold=overheat_threshold,
+    )
+
+
+def _risk_tags(item: CandidateObservation, overheat_threshold: Decimal) -> tuple[str, ...]:
+    """Preserve explicit risk facts for downstream policy checks.
+
+    The funnel already applies the permanent hard gates.  Allocation still
+    needs to distinguish a new listing, an overheated observation, and a
+    same-day exit constraint when selecting a protective sleeve, so those
+    facts are carried forward as stable labels rather than inferred later.
+    """
+
+    tags: list[str] = []
+    if item.is_new_listing is True:
+        tags.append("NEW_LISTING")
+    if item.overheat_score is not None and item.overheat_score >= overheat_threshold:
+        tags.append("OVERHEATED")
+    if item.same_day_exit_unavailable is True:
+        tags.append("SAME_DAY_EXIT_UNAVAILABLE")
+    if item.price_locked is True:
+        tags.append("PRICE_LOCKED")
+    if item.is_suspended is True:
+        tags.append("SUSPENDED")
+    if item.intraday_max_drawdown is not None and item.intraday_max_drawdown >= Decimal("0.04"):
+        tags.append("HIGH_INTRADAY_DRAWDOWN")
+    return tuple(tags)
 
 
 def _assessment_sort_key(item: CandidateAssessment) -> tuple[Decimal, str, str]:
