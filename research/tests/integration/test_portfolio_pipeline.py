@@ -13,6 +13,7 @@ from competition_core.pipeline.persistence import PipelineRepository
 from competition_core.pipeline.realtime import run_realtime_check
 from competition_core.pipeline.portfolio_runner import run_portfolio_draft, read_portfolio
 from competition_core.pipeline.holding_review_consumer import disposition_for
+from competition_core.research_tasks import ResearchTasks, worker_fingerprint
 from competition_core.terminal_strategy import (
     CandidateObservation,
     LeaderboardEntry,
@@ -20,6 +21,7 @@ from competition_core.terminal_strategy import (
     TerminalEvaluationRequest,
     TerminalSourceHashes,
     TerminalSnapshot,
+    TerminalStrategyConfig,
     TerminalStrategyService,
     load_terminal_strategy_config,
 )
@@ -256,3 +258,192 @@ def test_terminal_evaluation_identifier_is_strict_and_does_not_create_attempt(tm
     with pytest.raises(PipelineError, match="terminal evaluation identifier"):
         run_portfolio_draft(**kwargs, terminal_evaluation_id="../escape", draft_id="terminal-invalid")
     assert not (repo.directory / "portfolio-attempts" / "terminal-invalid").exists()
+
+
+def _terminal_shadow_evaluation(repo, kwargs):
+    """Build one complete terminal evaluation bound to this synthetic run."""
+
+    from tests.unit.test_terminal_strategy_allocation import _observation
+
+    payload = load_terminal_strategy_config().to_dict()
+    payload["competition"]["award_rank_cutoff"] = 30
+    payload["competition"]["award_rule_source"] = "fixture:rules-v1"
+    config = TerminalStrategyConfig.from_dict(payload)
+    as_of = kwargs["clock"]()
+    symbols = list(repo.load_stage("S4")["output_symbols"])
+    observations = tuple(
+        _observation(symbol, index=index, as_of=as_of, trade_date=as_of.date())
+        for index, symbol in enumerate(symbols[4:])
+    )
+    leaderboard = tuple(
+        LeaderboardEntry(
+            rank,
+            Decimal("1000000.00") + Decimal(rank) * Decimal("1000.00"),
+            as_of,
+        )
+        for rank in range(1, 31)
+    )
+    realtime = load_terminal_realtime_stage(repo, "synthetic-quote")
+    source_hashes = TerminalSourceHashes(
+        s4_hash=repo.load_stage("S4")["artifact_hash"],
+        s5_hash=repo.load_stage("S5")["artifact_hash"],
+        s5_5_hash=realtime["artifact_hash"],
+        account_snapshot_hash=kwargs["account"].snapshot_hash,
+        leaderboard_snapshot_hash="b" * 64,
+        config_hash=config.config_hash,
+        implementation_hash="c" * 64,
+    )
+    request = TerminalEvaluationRequest(
+        run_id=repo.run_id,
+        snapshot=TerminalSnapshot(
+            competition_id="synthetic-terminal-competition",
+            as_of=as_of,
+            trade_date=as_of.date(),
+            remaining_trade_dates=config.competition.remaining_trade_dates,
+            own_total_assets=kwargs["account"].current_total_asset,
+            leaderboard=leaderboard,
+            award_rank_cutoff=30,
+            award_rule_source="fixture:rules-v1",
+            own_rank=34,
+            account_snapshot_hash=kwargs["account"].snapshot_hash,
+            leaderboard_snapshot_hash="b" * 64,
+        ),
+        award_line_history=(),
+        candidates=observations,
+        core_symbols=tuple(symbols[:4]),
+        config=config,
+        source_hashes=source_hashes,
+        observed_at=as_of,
+        same_day_exit_unavailable_symbols=(),
+    )
+    evaluation = TerminalStrategyService().evaluate(request)
+    assert evaluation.status == "COMPLETE"
+    assert evaluation.allocation_policy is not None
+    TerminalEvaluationPersistence(repo.directory.parent).persist(evaluation)
+    return evaluation
+
+
+def _import_complete_ninef_inputs(repo, kwargs):
+    account = kwargs["account"].to_dict()
+    fees = kwargs["fees"].to_dict()
+    body = {
+        "account": account,
+        "fees": fees,
+        "source_receipt": {
+            "schema_version": "ninef.account.fetch.v2",
+            "method": "GET_ONLY",
+            "collection_consistent": True,
+            "account_snapshot_hash": kwargs["account"].snapshot_hash,
+            "fee_schedule_hash": content_hash(fees),
+            "orders": {
+                "complete": True,
+                "count": 0,
+                "open_count": 0,
+                "items": [],
+                "unknown_count": 0,
+            },
+        },
+    }
+    input_id = content_hash(body)
+    atomic_json(repo.directory / f"execution-imports/{input_id}.json", body, immutable=True)
+    atomic_json(repo.directory / "execution-inputs.json", {"id": input_id}, immutable=True)
+    return input_id
+
+
+def _prepare_real_terminal_shadow(tmp_path, monkeypatch, *, import_inputs=True, status=True):
+    from tests.integration.test_execution_status_pipeline import observe, prepared
+
+    repo, kwargs, source = prepared(tmp_path, monkeypatch, declared=True)
+    if status:
+        observe(repo, kwargs, source, status_id="synthetic-status")
+    if import_inputs:
+        _import_complete_ninef_inputs(repo, kwargs)
+    tasks = ResearchTasks(repo.directory.parent, clock=kwargs["clock"])
+    state = repo.state()
+    task_request = {
+        "schema_version": "competition.web-task.v1",
+        "run_id": repo.run_id,
+        "research_date": state["research_date"],
+        "phase": state["phase"],
+        "as_of": state["as_of"],
+        "ai_review": True,
+        "vibe_root": str(tasks.vibe_root),
+        "code_hashes": worker_fingerprint(tasks.vibe_root),
+    }
+    atomic_json(repo.directory / "task-request.json",
+                task_request | {"integrity_hash": content_hash(task_request)}, immutable=True)
+    evaluation = _terminal_shadow_evaluation(repo, kwargs)
+    return repo, kwargs, tasks, evaluation
+
+
+def test_terminal_shadow_plan_runs_real_pipeline_and_never_seals(tmp_path, monkeypatch):
+    from competition_core.research_portfolio import create_terminal_shadow_plan
+    from competition_core.pipeline.execution_plan import create_execution_plan
+
+    repo, kwargs, tasks, evaluation = _prepare_real_terminal_shadow(tmp_path, monkeypatch)
+    before = {
+        name: file_hash(repo.directory / name)
+        for name in ("S5_5.json", "S6.json", "portfolio.json", "portfolio-seal.json")
+        if (repo.directory / name).is_file()
+    }
+
+    projection = create_terminal_shadow_plan(
+        tasks=tasks,
+        run_id=repo.run_id,
+        evaluation_id=evaluation.evaluation_id,
+    )
+
+    assert projection["schema_version"] == "competition.terminal-shadow-plan.v1"
+    assert projection["evaluation_id"] == evaluation.evaluation_id
+    assert projection["shadow_only"] is True
+    assert projection["execution_ready"] is False
+    assert projection["production_accepted"] is False
+    assert projection["orders_submitted"] == 0
+    attempt = repo.directory / "portfolio-attempts" / projection["attempt_id"]
+    assert attempt.is_dir()
+    request = read_json(attempt / "request.json")
+    saved_result = read_json(attempt / "result.json")
+    manifest = read_json(repo.directory / "terminal" / evaluation.evaluation_id / "decision-manifest.json")
+    assert request["terminal_evaluation_id"] == evaluation.evaluation_id
+    assert request["terminal_manifest_hash"] == manifest["manifest_hash"]
+    assert request["terminal_allocation_policy_hash"] == manifest["allocation_policy_hash"]
+    assert request["terminal_source_hashes"] == {
+        key: manifest[key]
+        for key in ("s4_hash", "s5_hash", "s5_5_hash", "account_snapshot_hash",
+                    "leaderboard_snapshot_hash", "config_hash", "implementation_hash")
+    }
+    assert saved_result["execution_ready"] is False
+    assert saved_result["production_accepted"] is False
+    assert saved_result["summary"]["terminal_evaluation_id"] == evaluation.evaluation_id
+    assert not (repo.directory / "S5_5.json").exists()
+    assert not (repo.directory / "S6.json").exists()
+    assert not (repo.directory / "portfolio.json").exists()
+    assert not (repo.directory / "portfolio-seal.json").exists()
+    assert before == {}
+    with pytest.raises(PipelineError):
+        create_execution_plan(repo)
+
+
+@pytest.mark.parametrize("missing", ["last_realtime_check", "last_execution_status"])
+def test_terminal_shadow_plan_rejects_stale_or_missing_server_facts(tmp_path, monkeypatch, missing):
+    from competition_core.research_portfolio import create_terminal_shadow_plan
+
+    repo, kwargs, tasks, evaluation = _prepare_real_terminal_shadow(tmp_path, monkeypatch)
+    with pytest.raises(PipelineError, match="latest evaluation"):
+        create_terminal_shadow_plan(tasks=tasks, run_id=repo.run_id, evaluation_id="0" * 64)
+
+    state = repo.state()
+    state.pop(missing, None)
+    atomic_json(repo.directory / "run.json", state)
+    with pytest.raises(PipelineError, match="realtime"):
+        create_terminal_shadow_plan(tasks=tasks, run_id=repo.run_id)
+
+
+def test_terminal_shadow_plan_requires_complete_imported_account_receipt(tmp_path, monkeypatch):
+    from competition_core.research_portfolio import create_terminal_shadow_plan
+
+    repo, kwargs, tasks, evaluation = _prepare_real_terminal_shadow(
+        tmp_path, monkeypatch, import_inputs=False
+    )
+    with pytest.raises(PipelineError, match="imported Ninef"):
+        create_terminal_shadow_plan(tasks=tasks, run_id=repo.run_id)
