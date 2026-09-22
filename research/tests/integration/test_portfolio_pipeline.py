@@ -1,6 +1,7 @@
 """Synthetic pipeline/declared-account branches; NEVER evidence of real E2E."""
 
 from datetime import timedelta
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -12,6 +13,16 @@ from competition_core.pipeline.persistence import PipelineRepository
 from competition_core.pipeline.realtime import run_realtime_check
 from competition_core.pipeline.portfolio_runner import run_portfolio_draft, read_portfolio
 from competition_core.pipeline.holding_review_consumer import disposition_for
+from competition_core.terminal_strategy import (
+    CandidateObservation,
+    LeaderboardEntry,
+    TerminalEvaluationPersistence,
+    TerminalEvaluationRequest,
+    TerminalSourceHashes,
+    TerminalSnapshot,
+    TerminalStrategyService,
+    load_terminal_strategy_config,
+)
 from tests.unit.test_pipeline_portfolio import inputs, with_holdings
 from tests.integration.test_realtime_pipeline import quotes
 
@@ -168,3 +179,85 @@ def test_calculation_uses_second_actual_clock_and_never_backdates(tmp_path):
     times = iter([kwargs["account"].as_of, kwargs["account"].as_of + timedelta(seconds=61)])
     result = run_portfolio_draft(**(kwargs | {"clock": lambda: next(times)}), draft_id="late")
     assert result["portfolio_status"] == "NOT_READY" and repo.load_stage("S6") is None
+
+
+def test_terminal_evaluation_is_bound_as_non_executable_shadow_attempt(tmp_path):
+    repo, kwargs = setup(tmp_path, declared=True)
+    params = inputs()
+    symbols = [row["symbol"] for row in params["candidates"]]
+    repo.start_stage("S5_5")
+    repo.commit_stage(
+        "S5_5",
+        {"stage": "S5_5", "status": "SUCCESS", "input_symbols": symbols,
+         "output_symbols": symbols, "rows": [{"symbol": symbol, "selected": True} for symbol in symbols]},
+        metadata=params["context"].to_dict() | {
+            "snapshot_id": params["snapshot_id"], "config_hash": params["config"].config_hash,
+        }, elapsed=0,
+    )
+    stage_hashes = {name: repo.load_stage(name)["artifact_hash"] for name in ("S4", "S5", "S5_5")}
+    as_of = params["context"].as_of
+    terminal_config = load_terminal_strategy_config()
+    leaderboard = tuple(
+        LeaderboardEntry(rank, Decimal("1000000.00") + Decimal(rank) * Decimal("1000.00"), as_of)
+        for rank in range(1, 31)
+    )
+    base = TerminalEvaluationRequest(
+        run_id=repo.run_id,
+        snapshot=TerminalSnapshot(
+            competition_id="runner-fixture", as_of=as_of, trade_date=params["context"].research_date,
+            remaining_trade_dates=terminal_config.competition.remaining_trade_dates,
+            own_total_assets=Decimal("1000000.00"), leaderboard=leaderboard,
+            award_rank_cutoff=terminal_config.competition.award_rank_cutoff,
+            award_rule_source=terminal_config.competition.award_rule_source, own_rank=34,
+        ),
+        award_line_history=(),
+        candidates=(CandidateObservation(symbol="600001.SH", as_of=as_of,
+                                         trade_date=params["context"].research_date),),
+        core_symbols=tuple(symbols[:4]), config=terminal_config,
+        source_hashes=TerminalSourceHashes(
+            s4_hash="a" * 64, s5_hash="b" * 64, s5_5_hash="c" * 64,
+            account_snapshot_hash="d" * 64, leaderboard_snapshot_hash="e" * 64,
+            config_hash=terminal_config.config_hash, implementation_hash="f" * 64,
+        ), observed_at=as_of,
+    )
+    source_hashes = TerminalSourceHashes(
+        s4_hash=stage_hashes["S4"], s5_hash=stage_hashes["S5"], s5_5_hash=stage_hashes["S5_5"],
+        account_snapshot_hash=kwargs["account"].snapshot_hash,
+        leaderboard_snapshot_hash="b" * 64,
+        config_hash=base.config.config_hash, implementation_hash="c" * 64,
+    )
+    request = replace(
+        base,
+        run_id=repo.run_id,
+        snapshot=replace(base.snapshot, account_snapshot_hash=kwargs["account"].snapshot_hash),
+        source_hashes=source_hashes,
+        observed_at=kwargs["account"].as_of,
+    )
+    evaluation = TerminalStrategyService().evaluate(request)
+    assert evaluation.status in {"BLOCKED", "UNAVAILABLE"} and evaluation.allocation_policy is None
+    TerminalEvaluationPersistence(repo.directory.parent).persist(evaluation)
+
+    result = run_portfolio_draft(
+        **kwargs, terminal_evaluation_id=evaluation.evaluation_id, draft_id="terminal-shadow",
+    )
+
+    assert result["portfolio_status"] == "NOT_READY"
+    assert result["execution_ready"] is False and result["production_accepted"] is False
+    assert "TERMINAL_POLICY_SHADOW_ONLY" in result["risk_checks"]["blocking_reasons"]
+    assert repo.load_stage("S6") is None
+    assert not (repo.directory / "portfolio-seal.json").exists()
+    attempt = repo.directory / "portfolio-attempts" / "terminal-shadow"
+    request_payload = read_json(attempt / "request.json")
+    saved_result = read_json(attempt / "result.json")
+    assert request_payload["terminal_evaluation_id"] == evaluation.evaluation_id
+    assert request_payload["terminal_manifest_hash"]
+    assert request_payload["terminal_source_hashes"]["s5_5_hash"] == stage_hashes["S5_5"]
+    assert saved_result["summary"]["terminal_evaluation_id"] == evaluation.evaluation_id
+    assert saved_result["policy"]["terminal_evaluation_binding"]["pipeline_config_hash"] == params["config"].config_hash
+
+
+def test_terminal_evaluation_identifier_is_strict_and_does_not_create_attempt(tmp_path):
+    repo, kwargs = setup(tmp_path, declared=True)
+    with pytest.raises(PipelineError, match="terminal evaluation identifier"):
+        run_portfolio_draft(**kwargs, terminal_evaluation_id="../escape", draft_id="terminal-invalid")
+    assert not (repo.directory / "portfolio-attempts" / "terminal-invalid").exists()
