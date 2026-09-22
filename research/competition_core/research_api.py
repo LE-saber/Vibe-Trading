@@ -254,6 +254,13 @@ class TerminalEvaluateRequest(BaseModel):
     downgrade_confirmation_count: StrictInt = Field(default=0, ge=0, le=10)
 
 
+class TerminalPlanRequest(BaseModel):
+    """Server-bound request for one terminal shadow portfolio attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+    evaluation_id: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
 def get_execution_service():
     from competition_core.execution.runtime import get_execution_service as factory
     return factory()
@@ -445,6 +452,30 @@ def terminal_evaluate(
         "reasons": list(runtime.diagnostics.reasons),
     }
     return response
+
+
+@router.post("/runs/{run_id}/terminal/plan")
+@safe_api
+def terminal_plan(
+    run_id: str,
+    body: TerminalPlanRequest,
+    tasks=Depends(get_tasks),
+):
+    """Create one server-bound, mode-aware terminal portfolio shadow attempt.
+
+    This endpoint deliberately has no execution-service dependency.  The
+    orchestration function revalidates the immutable evaluation, imported
+    account evidence, current run state, and postconditions before returning
+    a bounded projection.
+    """
+
+    from competition_core.research_portfolio import create_terminal_shadow_plan
+
+    return create_terminal_shadow_plan(
+        tasks=tasks,
+        run_id=run_id,
+        evaluation_id=body.evaluation_id,
+    )
 
 
 @router.get("/runs/{run_id}/terminal/decision")

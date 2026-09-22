@@ -333,3 +333,57 @@ def test_terminal_import_tampering_fails_closed(client, tamper):
         atomic_json(path, payload, immutable=False)
     with pytest.raises(PipelineError):
         _imported_terminal_account_view(tasks, run_id)
+
+
+def test_terminal_plan_auth_schema_and_bounded_shadow_projection(client, monkeypatch):
+    client, tasks = client
+    run_id = "terminal-plan-contract"
+    _task(tasks, run_id)
+
+    assert client.post(f"/pipeline/runs/{run_id}/terminal/plan", json={}).status_code == 403
+    extra = client.post(
+        f"/pipeline/runs/{run_id}/terminal/plan",
+        json={"check_id": "client-must-not-supply"},
+        headers=HEADERS,
+    )
+    assert extra.status_code == 422
+    invalid = client.post(
+        f"/pipeline/runs/{run_id}/terminal/plan",
+        json={"evaluation_id": "../escape"},
+        headers=HEADERS,
+    )
+    assert invalid.status_code == 422
+
+    evaluation_id = "a" * 64
+    calls = {}
+
+    def fake_plan(**kwargs):
+        calls.update(kwargs)
+        return {
+            "schema_version": "competition.terminal-shadow-plan.v1",
+            "run_id": run_id,
+            "evaluation_id": evaluation_id,
+            "attempt_id": "terminal-attempt",
+            "status": "SHADOW",
+            "shadow_only": True,
+            "execution_ready": False,
+            "production_accepted": False,
+            "orders_submitted": 0,
+        }
+
+    monkeypatch.setattr(
+        "competition_core.research_portfolio.create_terminal_shadow_plan", fake_plan
+    )
+    response = client.post(
+        f"/pipeline/runs/{run_id}/terminal/plan",
+        json={"evaluation_id": evaluation_id},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["schema_version"] == "competition.terminal-shadow-plan.v1"
+    assert body["shadow_only"] is True
+    assert body["execution_ready"] is False
+    assert body["production_accepted"] is False
+    assert body["orders_submitted"] == 0
+    assert calls == {"tasks": tasks, "run_id": run_id, "evaluation_id": evaluation_id}
