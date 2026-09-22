@@ -63,6 +63,19 @@ from .persistence import (
     load_terminal_evaluation,
     persist_terminal_evaluation,
 )
+from .pipeline_adapter import (
+    AdapterDiagnostics,
+    AdapterResult,
+    CandidateAdapterBlocker,
+    CandidateAdapterDiagnostics,
+    CandidateAdapterResult,
+    PipelineAdapterBlocker,
+    PipelineAdapterDiagnostics,
+    PipelineAdapterError,
+    adapt_pipeline_candidates,
+    adapt_verified_pipeline_candidates,
+    build_pipeline_candidates,
+)
 from .models import (
     AwardLineForecast,
     AwardLinePoint,
@@ -107,4 +120,8 @@ __all__ = [
     "TerminalEvaluationStore", "TerminalPersistence", "TerminalPersistenceError",
     "TerminalStrategyPersistence",
     "load_terminal_evaluation", "persist_terminal_evaluation",
+    "AdapterDiagnostics", "AdapterResult", "PipelineAdapterBlocker",
+    "PipelineAdapterDiagnostics", "PipelineAdapterError", "CandidateAdapterBlocker",
+    "CandidateAdapterDiagnostics", "CandidateAdapterResult", "adapt_pipeline_candidates",
+    "adapt_verified_pipeline_candidates", "build_pipeline_candidates",
 ]
