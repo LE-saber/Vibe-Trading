@@ -5,6 +5,7 @@ from datetime import date, datetime
 from functools import wraps
 import os
 from pathlib import Path
+import re
 import secrets
 from urllib.parse import urlsplit
 
@@ -12,7 +13,10 @@ from fastapi import APIRouter, Depends, Header, Request, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
+from competition_core.pipeline.account import AccountSnapshot
+from competition_core.pipeline.artifacts import confined_path, content_hash, read_json
 from competition_core.pipeline.errors import PipelineError
+from competition_core.pipeline.portfolio import FeeSchedule
 from competition_core.pipeline.time_context import SHANGHAI
 from competition_core.research_tasks import ResearchTasks, checked_directory
 
@@ -85,6 +89,97 @@ def get_ninef_account_reader():
 
 def get_ninef_leaderboard_reader():
     return get_ninef_leaderboard_view
+
+
+_EXECUTION_IMPORT_ID = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _imported_terminal_account_view(tasks, run_id: str):
+    """Return a verified imported Ninef account view, or ``None`` for fallback.
+
+    An absent execution-inputs pointer is an ordinary first-run condition.  A
+    present pointer is immutable evidence, so malformed or changed content is
+    never hidden by falling back to a live provider read.
+    """
+
+    directory = checked_directory(tasks.root, run_id)
+    raw_pointer_path = directory / "execution-inputs.json"
+    if raw_pointer_path.is_symlink():
+        raise PipelineError("STALE_DATA", "execution input pointer is invalid")
+    pointer_path = confined_path(directory, "execution-inputs.json")
+    if not pointer_path.exists():
+        return None
+    if pointer_path.is_symlink() or not pointer_path.is_file():
+        raise PipelineError("STALE_DATA", "execution input pointer is invalid")
+    try:
+        pointer = read_json(pointer_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PipelineError("STALE_DATA", "execution input pointer is invalid") from exc
+    if not isinstance(pointer, dict) or set(pointer) != {"id"}:
+        raise PipelineError("STALE_DATA", "execution input pointer is invalid")
+    input_id = pointer.get("id")
+    if not isinstance(input_id, str) or _EXECUTION_IMPORT_ID.fullmatch(input_id) is None:
+        raise PipelineError("STALE_DATA", "execution input identity is invalid")
+    raw_import_root = directory / "execution-imports"
+    raw_import_path = raw_import_root / f"{input_id}.json"
+    if raw_import_root.is_symlink() or raw_import_path.is_symlink():
+        raise PipelineError("STALE_DATA", "execution input import is unavailable")
+    import_root = confined_path(directory, "execution-imports")
+    import_path = confined_path(directory, f"execution-imports/{input_id}.json")
+    if (not import_root.is_dir() or not import_path.is_file()):
+        raise PipelineError("STALE_DATA", "execution input import is unavailable")
+    try:
+        payload = read_json(import_path, expected_hash=input_id)
+    except PipelineError:
+        raise
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PipelineError("STALE_DATA", "execution input import is invalid") from exc
+    if not isinstance(payload, dict) or not {"account", "fees"} <= set(payload):
+        raise PipelineError("STALE_DATA", "execution input import schema is invalid")
+    if set(payload) - {"account", "fees", "source_receipt"}:
+        raise PipelineError("STALE_DATA", "execution input import schema is invalid")
+    try:
+        account = AccountSnapshot.from_dict(payload["account"])
+        fees = FeeSchedule.from_dict(payload["fees"])
+    except (PipelineError, TypeError, ValueError) as exc:
+        raise PipelineError("STALE_DATA", "execution input account or fee evidence is invalid") from exc
+    if "source_receipt" not in payload:
+        return None
+    receipt = payload["source_receipt"]
+    if not isinstance(receipt, dict):
+        raise PipelineError("STALE_DATA", "execution input source receipt is invalid")
+    if (receipt.get("schema_version") != "ninef.account.fetch.v2"
+            or receipt.get("method") != "GET_ONLY"
+            or receipt.get("collection_consistent") is not True
+            or receipt.get("account_snapshot_hash") != account.snapshot_hash
+            or receipt.get("fee_schedule_hash") != content_hash(fees.to_dict())):
+        raise PipelineError("STALE_DATA", "execution input source receipt is not bound to account")
+    orders = receipt.get("orders")
+    if not isinstance(orders, dict):
+        raise PipelineError("STALE_DATA", "execution input order receipt is invalid")
+    required_order_fields = {"complete", "count", "open_count", "items"}
+    if (not required_order_fields <= set(orders)
+            or type(orders["complete"]) is not bool
+            or orders["complete"] is not True
+            or type(orders["count"]) is not int or orders["count"] < 0
+            or type(orders["open_count"]) is not int or orders["open_count"] < 0
+            or not isinstance(orders["items"], list)
+            or orders["count"] != len(orders["items"])
+            or orders["open_count"] != account.pending_order_count):
+        raise PipelineError("STALE_DATA", "execution input order receipt is incomplete")
+    # Preserve provider-declared unknown fields exactly; never manufacture one.
+    view_orders = dict(orders)
+    return {
+        "schema_version": "competition.account-view.v1",
+        "account": account.to_dict(),
+        "frozen_cash": str(account.cash_balance - account.available_cash),
+        "orders": view_orders,
+        "collection_consistent": True,
+        "fee_evidence_available": True,
+        "orders_submitted": 0,
+        "read_only": True,
+        "account_snapshot_hash": account.snapshot_hash,
+    }
 
 
 def safe_api(function):
@@ -320,7 +415,9 @@ def terminal_evaluate(
     _, stages = _terminal_stage_bundle(tasks, run_id)
     config = load_terminal_strategy_config()
     previous_mode = _previous_terminal_mode(tasks, run_id, body.previous_mode)
-    account_view = account_reader()
+    account_view = _imported_terminal_account_view(tasks, run_id)
+    if account_view is None:
+        account_view = account_reader()
     leaderboard_view = leaderboard_reader()
     runtime = run_terminal_runtime(
         run_id,

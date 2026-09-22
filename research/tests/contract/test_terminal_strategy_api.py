@@ -9,9 +9,12 @@ from fastapi.testclient import TestClient
 import pytest
 
 from competition_core.api import app
-from competition_core.pipeline.artifacts import atomic_json
+from competition_core.pipeline.artifacts import atomic_json, content_hash, read_json
+from competition_core.pipeline.errors import PipelineError
+from competition_core.pipeline.portfolio import FeeSchedule
 from competition_core.pipeline import persistence as pipeline_persistence
 from competition_core.research_api import (
+    _imported_terminal_account_view,
     get_ninef_account_reader,
     get_ninef_leaderboard_reader,
     get_tasks,
@@ -27,6 +30,7 @@ if str(_UNIT_DIR) not in sys.path:
     sys.path.insert(0, str(_UNIT_DIR))
 
 from test_terminal_strategy_pipeline_adapter import _inputs as candidate_inputs
+from test_pipeline_portfolio import inputs as portfolio_inputs
 from test_terminal_strategy_runtime import _account, _config
 from test_terminal_strategy_service import _request
 
@@ -212,3 +216,120 @@ def test_remote_get_is_rejected(client):
     _task(tasks, "terminal-remote-fixture")
     with TestClient(app, client=("192.0.2.20", 50000)) as remote:
         assert remote.get("/pipeline/terminal/status").status_code == 403
+
+
+def _write_execution_import(tasks, run_id, *, receipt=True):
+    directory = tasks.root / run_id
+    account_view = _account()
+    fees = portfolio_inputs()["fees"]
+    body = {
+        "account": account_view["account"],
+        "fees": fees.to_dict(),
+    }
+    if receipt:
+        body["source_receipt"] = {
+            "schema_version": "ninef.account.fetch.v2",
+            "method": "GET_ONLY",
+            "collection_consistent": True,
+            "account_snapshot_hash": content_hash(body["account"]),
+            "fee_schedule_hash": content_hash(fees.to_dict()),
+            "orders": {"complete": True, "count": 0, "open_count": 0, "items": [], "unknown_count": 0},
+        }
+    input_id = content_hash(body)
+    atomic_json(directory / "execution-imports" / f"{input_id}.json", body, immutable=True)
+    atomic_json(directory / "execution-inputs.json", {"id": input_id}, immutable=True)
+    return directory, input_id
+
+
+def test_terminal_imported_account_view_skips_live_fallback(client):
+    _, tasks = client
+    run_id = "terminal-imported-account"
+    _task(tasks, run_id)
+    directory, _ = _write_execution_import(tasks, run_id)
+    view = _imported_terminal_account_view(tasks, run_id)
+    assert view["schema_version"] == "competition.account-view.v1"
+    assert view["read_only"] is True and view["orders_submitted"] == 0
+    assert view["account_snapshot_hash"] == content_hash(view["account"])
+    assert view["orders"]["unknown_count"] == 0
+    assert view["frozen_cash"] == "0.00"
+    assert directory.joinpath("execution-inputs.json").is_file()
+
+
+def test_terminal_import_without_receipt_returns_live_fallback(client):
+    _, tasks = client
+    run_id = "terminal-account-fallback"
+    _task(tasks, run_id)
+    _write_execution_import(tasks, run_id, receipt=False)
+    assert _imported_terminal_account_view(tasks, run_id) is None
+
+
+def _patch_terminal_evaluate_fixture(monkeypatch, tasks, run_id):
+    inputs = candidate_inputs()
+    values = {"S4": inputs["s4_stage"], "S5": inputs["s5_stage"], "S5_5": inputs["s5_5_stage"]}
+    monkeypatch.setattr(
+        "competition_core.research_api._terminal_stage_bundle",
+        lambda supplied_tasks, supplied_run: (tasks.root / run_id, values),
+    )
+    from test_terminal_strategy_snapshot_adapter import _leaderboard_view
+    app.dependency_overrides[get_ninef_leaderboard_reader] = lambda: _leaderboard_view
+
+
+def test_terminal_evaluate_prefers_verified_imported_account(client, monkeypatch):
+    client, tasks = client
+    run_id = "terminal-imported-evaluate"
+    _task(tasks, run_id)
+    _write_execution_import(tasks, run_id, receipt=True)
+    imported = _imported_terminal_account_view(tasks, run_id)
+    _patch_terminal_evaluate_fixture(monkeypatch, tasks, run_id)
+
+    def live_reader_must_not_run():
+        pytest.fail("terminal evaluation used live account despite a verified import")
+
+    app.dependency_overrides[get_ninef_account_reader] = lambda: live_reader_must_not_run
+    response = client.post(f"/pipeline/runs/{run_id}/terminal/evaluate", json={}, headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["snapshot"]["account_snapshot_hash"] == imported["account_snapshot_hash"]
+    assert body["execution_ready"] is False and body["orders_submitted"] == 0
+
+
+def test_terminal_evaluate_without_receipt_uses_live_account_fallback(client, monkeypatch):
+    client, tasks = client
+    run_id = "terminal-live-account-fallback"
+    _task(tasks, run_id)
+    _write_execution_import(tasks, run_id, receipt=False)
+    _patch_terminal_evaluate_fixture(monkeypatch, tasks, run_id)
+    calls = {"account": 0}
+
+    def live_reader():
+        calls["account"] += 1
+        return _account()
+
+    app.dependency_overrides[get_ninef_account_reader] = lambda: live_reader
+    response = client.post(f"/pipeline/runs/{run_id}/terminal/evaluate", json={}, headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert calls["account"] == 1
+    assert response.json()["execution_ready"] is False
+
+
+@pytest.mark.parametrize("tamper", ["pointer", "import", "receipt"])
+def test_terminal_import_tampering_fails_closed(client, tamper):
+    _, tasks = client
+    run_id = f"terminal-account-tamper-{tamper}"
+    _task(tasks, run_id)
+    directory, input_id = _write_execution_import(tasks, run_id)
+    if tamper == "pointer":
+        atomic_json(directory / "execution-inputs.json", {"id": "f" * 64}, immutable=False)
+    elif tamper == "import":
+        path = directory / "execution-imports" / f"{input_id}.json"
+        atomic_json(path, {"corrupt": True}, immutable=False)
+    else:
+        path = directory / "execution-imports" / f"{input_id}.json"
+        payload = read_json(path)
+        payload["source_receipt"]["account_snapshot_hash"] = "0" * 64
+        # Keep the old pointer deliberately: content-addressed verification must fail first.
+        atomic_json(path, payload, immutable=False)
+    with pytest.raises(PipelineError):
+        _imported_terminal_account_view(tasks, run_id)
