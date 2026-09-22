@@ -1,4 +1,4 @@
-version: v1
+version: v2
 timezone: Asia/Shanghai
 schedule:
   preflight_start: "08:45"
@@ -11,8 +11,11 @@ schedule:
     - "13:05"
     - "13:35"
     - "14:15"
-    - "14:35"
-  execution_target: "14:50"
+  refresh_at: "13:15"
+  primary_decision: "13:30"
+  final_revision: "14:10"
+  main_order_deadline: "14:25"
+  risk_freeze: "14:35"
   ordinary_order_cutoff: "14:57"
   postclose_start: "15:05"
   leaderboard_checkpoints:
