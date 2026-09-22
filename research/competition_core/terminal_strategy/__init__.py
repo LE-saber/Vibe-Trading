@@ -76,6 +76,15 @@ from .pipeline_adapter import (
     adapt_verified_pipeline_candidates,
     build_pipeline_candidates,
 )
+from .snapshot_adapter import (
+    SnapshotAdapterBlocker,
+    SnapshotAdapterDiagnostics,
+    SnapshotAdapterError,
+    SnapshotAdapterResult,
+    adapt_account_leaderboard_snapshot,
+    adapt_pipeline_snapshot,
+    build_terminal_snapshot,
+)
 from .models import (
     AwardLineForecast,
     AwardLinePoint,
@@ -124,4 +133,7 @@ __all__ = [
     "PipelineAdapterDiagnostics", "PipelineAdapterError", "CandidateAdapterBlocker",
     "CandidateAdapterDiagnostics", "CandidateAdapterResult", "adapt_pipeline_candidates",
     "adapt_verified_pipeline_candidates", "build_pipeline_candidates",
+    "SnapshotAdapterBlocker", "SnapshotAdapterDiagnostics", "SnapshotAdapterError",
+    "SnapshotAdapterResult", "adapt_account_leaderboard_snapshot", "adapt_pipeline_snapshot",
+    "build_terminal_snapshot",
 ]
