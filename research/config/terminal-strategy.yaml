@@ -6,6 +6,13 @@ competition:
   award_rank_cutoff: null
   award_rule_source: null
   final_trade_date: "2026-09-30"
+  remaining_trade_dates:
+    - "2026-09-22"
+    - "2026-09-23"
+    - "2026-09-24"
+    - "2026-09-28"
+    - "2026-09-29"
+    - "2026-09-30"
 
 award_line:
   safety_buffer_min: 0.005

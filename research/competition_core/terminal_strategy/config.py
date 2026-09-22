@@ -39,6 +39,7 @@ class TerminalCompetitionConfig:
     award_rank_cutoff: int | None
     award_rule_source: str | None
     final_trade_date: date
+    remaining_trade_dates: tuple[date, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +147,9 @@ class TerminalStrategyConfig:
                 "award_rank_cutoff": self.competition.award_rank_cutoff,
                 "award_rule_source": self.competition.award_rule_source,
                 "final_trade_date": self.competition.final_trade_date.isoformat(),
+                "remaining_trade_dates": [
+                    item.isoformat() for item in self.competition.remaining_trade_dates
+                ],
             },
             "award_line": {
                 "safety_buffer_min": str(self.award_line.safety_buffer_min),
@@ -204,7 +208,9 @@ class TerminalStrategyConfig:
 
 
 _ROOT_FIELDS = {"version", "competition", "award_line", "mode", "funnel", "allocation", "schedule"}
-_COMPETITION_FIELDS = {"award_rank_cutoff", "award_rule_source", "final_trade_date"}
+_COMPETITION_FIELDS = {
+    "award_rank_cutoff", "award_rule_source", "final_trade_date", "remaining_trade_dates",
+}
 _AWARD_LINE_FIELDS = {
     "safety_buffer_min", "safety_buffer_base", "safety_buffer_max", "history_sessions",
     "min_valid_snapshots", "max_snapshot_age_seconds", "forecast_method",
@@ -261,7 +267,12 @@ def _from_mapping(payload: Mapping[str, Any]) -> TerminalStrategyConfig:
 
 
 def _parse_competition(value: Any) -> TerminalCompetitionConfig:
-    if not isinstance(value, Mapping) or not set(value).issubset(_COMPETITION_FIELDS) or "final_trade_date" not in value:
+    if (
+        not isinstance(value, Mapping)
+        or not set(value).issubset(_COMPETITION_FIELDS)
+        or "final_trade_date" not in value
+        or "remaining_trade_dates" not in value
+    ):
         raise TerminalStrategyConfigError("competition has missing or unknown fields")
     cutoff = value.get("award_rank_cutoff")
     if cutoff is not None and (type(cutoff) is not int or not 1 <= cutoff <= 100_000):
@@ -270,7 +281,22 @@ def _parse_competition(value: Any) -> TerminalCompetitionConfig:
     if source is not None:
         source = _text(source, "competition.award_rule_source")
     final_date = _date(value["final_trade_date"], "competition.final_trade_date")
-    return TerminalCompetitionConfig(cutoff, source, final_date)
+    raw_dates = value["remaining_trade_dates"]
+    if not isinstance(raw_dates, (list, tuple)) or not raw_dates:
+        raise TerminalStrategyConfigError("competition.remaining_trade_dates must be a non-empty list")
+    try:
+        remaining = tuple(_date(item, "competition.remaining_trade_dates") for item in raw_dates)
+    except TerminalStrategyConfigError:
+        raise
+    if len(set(remaining)) != len(remaining) or remaining != tuple(sorted(remaining)):
+        raise TerminalStrategyConfigError(
+            "competition.remaining_trade_dates must be strictly sorted and unique"
+        )
+    if final_date not in remaining or final_date != max(remaining):
+        raise TerminalStrategyConfigError(
+            "competition.final_trade_date must be the maximum remaining trade date"
+        )
+    return TerminalCompetitionConfig(cutoff, source, final_date, remaining)
 
 
 def _parse_award_line(value: Any) -> AwardLineConfig:

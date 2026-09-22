@@ -85,6 +85,16 @@ from .snapshot_adapter import (
     adapt_pipeline_snapshot,
     build_terminal_snapshot,
 )
+from .runtime import (
+    RuntimeDiagnostics,
+    RuntimeResult,
+    TerminalRuntime,
+    TerminalRuntimeResult,
+    evaluate_terminal_runtime,
+    run_terminal_evaluation_runtime,
+    run_terminal_runtime,
+    terminal_implementation_hash,
+)
 from .models import (
     AwardLineForecast,
     AwardLinePoint,
@@ -136,4 +146,7 @@ __all__ = [
     "SnapshotAdapterBlocker", "SnapshotAdapterDiagnostics", "SnapshotAdapterError",
     "SnapshotAdapterResult", "adapt_account_leaderboard_snapshot", "adapt_pipeline_snapshot",
     "build_terminal_snapshot",
+    "RuntimeDiagnostics", "RuntimeResult", "TerminalRuntime", "TerminalRuntimeResult",
+    "evaluate_terminal_runtime", "run_terminal_evaluation_runtime", "run_terminal_runtime",
+    "terminal_implementation_hash",
 ]
