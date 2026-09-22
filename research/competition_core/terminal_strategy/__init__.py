@@ -19,6 +19,16 @@ from .config import (
     load_terminal_config,
     load_terminal_strategy_config,
 )
+from .candidate_funnel import (
+    CandidateAssessment,
+    CandidateBlocker,
+    CandidateFunnelError,
+    CandidateObservation,
+    FunnelResult,
+    build_candidate_funnel,
+    build_terminal_candidate_funnel,
+    evaluate_candidate_funnel,
+)
 from .models import (
     AwardLineForecast,
     AwardLinePoint,
@@ -42,11 +52,13 @@ from .state_machine import (
 __all__ = [
     "AllocationConfig", "AwardLineConfig", "AwardLineForecast", "AwardLinePoint",
     "AwardLineSample", "DEFAULT_CONFIG_PATH", "ForecastConfidence", "FunnelConfig",
-    "LeaderboardEntry", "ModeDecision", "TerminalBlocker", "TerminalCompetitionConfig",
+    "CandidateAssessment", "CandidateBlocker", "CandidateFunnelError", "CandidateObservation",
+    "FunnelResult", "LeaderboardEntry", "ModeDecision", "TerminalBlocker", "TerminalCompetitionConfig",
     "TerminalMode", "TerminalModeConfig", "TerminalModeDecision", "TerminalModeStateMachine",
     "TerminalModelError", "TerminalScheduleConfig", "TerminalSnapshot",
     "TerminalStrategyConfig", "TerminalStrategyConfigError", "build_award_line_forecast",
     "calculate_award_line_forecast", "calculate_terminal_mode", "decide_terminal_mode",
     "evaluate_terminal_mode", "forecast_award_line", "load_terminal_config",
-    "load_terminal_strategy_config", "target_asset_for_award_line",
+    "load_terminal_strategy_config", "target_asset_for_award_line", "build_candidate_funnel",
+    "build_terminal_candidate_funnel", "evaluate_candidate_funnel",
 ]

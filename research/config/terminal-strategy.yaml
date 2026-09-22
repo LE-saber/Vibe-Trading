@@ -33,6 +33,21 @@ funnel:
   continuity_sessions: 3
   minimum_liquidity_score: 60
   maximum_intraday_drawdown: 0.06
+  minimum_execution_probability: 0.50
+  minimum_evidence_quality: 0.60
+  maximum_correlation: 0.85
+  maximum_opening_gap: 0.08
+  max_quote_age_seconds: 60
+  overheat_score_threshold: 80
+  overheat_penalty: 0.10
+  scoring_weights:
+    relative_strength: 0.25
+    trend_continuity: 0.20
+    liquidity_quality: 0.15
+    close_intraday_strength: 0.15
+    evidence_quality: 0.10
+    execution_probability: 0.10
+    diversification_value: 0.05
 
 allocation:
   protect_aggressive_cap: 0.10

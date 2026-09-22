@@ -72,6 +72,18 @@ class FunnelConfig:
     continuity_sessions: int
     minimum_liquidity_score: Decimal
     maximum_intraday_drawdown: Decimal
+    minimum_execution_probability: Decimal
+    minimum_evidence_quality: Decimal
+    maximum_correlation: Decimal
+    maximum_opening_gap: Decimal
+    max_quote_age_seconds: int
+    overheat_score_threshold: Decimal
+    overheat_penalty: Decimal
+    scoring_weights: tuple[tuple[str, Decimal], ...]
+
+    @property
+    def weight_map(self) -> dict[str, Decimal]:
+        return dict(self.scoring_weights)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +173,16 @@ class TerminalStrategyConfig:
                 "continuity_sessions": self.funnel.continuity_sessions,
                 "minimum_liquidity_score": str(self.funnel.minimum_liquidity_score),
                 "maximum_intraday_drawdown": str(self.funnel.maximum_intraday_drawdown),
+                "minimum_execution_probability": str(self.funnel.minimum_execution_probability),
+                "minimum_evidence_quality": str(self.funnel.minimum_evidence_quality),
+                "maximum_correlation": str(self.funnel.maximum_correlation),
+                "maximum_opening_gap": str(self.funnel.maximum_opening_gap),
+                "max_quote_age_seconds": self.funnel.max_quote_age_seconds,
+                "overheat_score_threshold": str(self.funnel.overheat_score_threshold),
+                "overheat_penalty": str(self.funnel.overheat_penalty),
+                "scoring_weights": {
+                    name: str(weight) for name, weight in self.funnel.scoring_weights
+                },
             },
             "allocation": {
                 "protect_aggressive_cap": str(self.allocation.protect_aggressive_cap),
@@ -194,6 +216,9 @@ _MODE_FIELDS = {
 _FUNNEL_FIELDS = {
     "watch_count", "focus_count", "terminal_count_min", "terminal_count_max",
     "continuity_sessions", "minimum_liquidity_score", "maximum_intraday_drawdown",
+    "minimum_execution_probability", "minimum_evidence_quality", "maximum_correlation",
+    "maximum_opening_gap", "max_quote_age_seconds", "overheat_score_threshold",
+    "overheat_penalty", "scoring_weights",
 }
 _ALLOCATION_FIELDS = {
     "protect_aggressive_cap", "normal_aggressive_target", "attack_aggressive_min",
@@ -288,7 +313,36 @@ def _parse_funnel(value: Any) -> FunnelConfig:
     continuity = _integer(value["continuity_sessions"], "funnel.continuity_sessions", 1, 100)
     liquidity = _number(value["minimum_liquidity_score"], "funnel.minimum_liquidity_score", Decimal("0"), Decimal("100"))
     drawdown = _rate(value["maximum_intraday_drawdown"], "funnel.maximum_intraday_drawdown")
-    return FunnelConfig(watch, focus, terminal_min, terminal_max, continuity, liquidity, drawdown)
+    if drawdown <= Decimal("0"):
+        raise TerminalStrategyConfigError("funnel.maximum_intraday_drawdown must be greater than zero")
+    execution = _rate(value["minimum_execution_probability"], "funnel.minimum_execution_probability")
+    evidence = _rate(value["minimum_evidence_quality"], "funnel.minimum_evidence_quality")
+    correlation = _rate(value["maximum_correlation"], "funnel.maximum_correlation")
+    opening_gap = _rate(value["maximum_opening_gap"], "funnel.maximum_opening_gap")
+    if opening_gap <= Decimal("0"):
+        raise TerminalStrategyConfigError("funnel.maximum_opening_gap must be greater than zero")
+    max_quote_age = _integer(value["max_quote_age_seconds"], "funnel.max_quote_age_seconds", 1, 3600)
+    overheat_threshold = _number(value["overheat_score_threshold"], "funnel.overheat_score_threshold", Decimal("0"), Decimal("100"))
+    overheat_penalty = _rate(value["overheat_penalty"], "funnel.overheat_penalty")
+    weights = value["scoring_weights"]
+    weight_fields = {
+        "relative_strength", "trend_continuity", "liquidity_quality",
+        "close_intraday_strength", "evidence_quality", "execution_probability",
+        "diversification_value",
+    }
+    if not isinstance(weights, Mapping) or set(weights) != weight_fields:
+        raise TerminalStrategyConfigError("funnel.scoring_weights has missing or unknown fields")
+    parsed_weights = tuple(sorted(
+        (name, _rate(weights[name], f"funnel.scoring_weights.{name}"))
+        for name in weight_fields
+    ))
+    if sum((weight for _, weight in parsed_weights), Decimal("0")) != Decimal("1"):
+        raise TerminalStrategyConfigError("funnel scoring weights must sum to one")
+    return FunnelConfig(
+        watch, focus, terminal_min, terminal_max, continuity, liquidity, drawdown,
+        execution, evidence, correlation, opening_gap, max_quote_age, overheat_threshold,
+        overheat_penalty, parsed_weights,
+    )
 
 
 def _parse_allocation(value: Any) -> AllocationConfig:
