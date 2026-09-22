@@ -40,6 +40,29 @@ from .allocation import (
     evaluate_terminal_allocation,
     plan_terminal_allocation,
 )
+from .service import (
+    AwardLineHistory,
+    TerminalEvaluation,
+    TerminalEvaluationRequest,
+    TerminalEvaluationResult,
+    TerminalEvaluationSourceHashes,
+    TerminalServiceError,
+    TerminalSourceHashes,
+    TerminalRequest,
+    TerminalEvaluationService,
+    TerminalStrategyService,
+    evaluate_terminal_request,
+    run_terminal_evaluation,
+)
+from .persistence import (
+    TerminalEvaluationPersistence,
+    TerminalEvaluationStore,
+    TerminalPersistence,
+    TerminalPersistenceError,
+    TerminalStrategyPersistence,
+    load_terminal_evaluation,
+    persist_terminal_evaluation,
+)
 from .models import (
     AwardLineForecast,
     AwardLinePoint,
@@ -75,4 +98,13 @@ __all__ = [
     "TerminalAllocationError", "TerminalAllocationEvaluation", "TerminalAllocationInputs",
     "TerminalAllocationPolicy", "build_terminal_allocation_policy",
     "create_terminal_allocation_policy", "evaluate_terminal_allocation", "plan_terminal_allocation",
+    "TerminalEvaluationRequest", "TerminalEvaluationResult", "TerminalEvaluationSourceHashes",
+    "TerminalEvaluation", "TerminalRequest",
+    "AwardLineHistory",
+    "TerminalServiceError", "TerminalSourceHashes", "TerminalStrategyService",
+    "TerminalEvaluationService",
+    "evaluate_terminal_request", "run_terminal_evaluation", "TerminalEvaluationPersistence",
+    "TerminalEvaluationStore", "TerminalPersistence", "TerminalPersistenceError",
+    "TerminalStrategyPersistence",
+    "load_terminal_evaluation", "persist_terminal_evaluation",
 ]
