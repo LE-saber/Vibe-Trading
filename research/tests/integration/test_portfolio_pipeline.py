@@ -23,6 +23,7 @@ from competition_core.terminal_strategy import (
     TerminalStrategyService,
     load_terminal_strategy_config,
 )
+from competition_core.terminal_strategy.realtime_stage import load_terminal_realtime_stage
 from tests.unit.test_pipeline_portfolio import inputs, with_holdings
 from tests.integration.test_realtime_pipeline import quotes
 
@@ -185,16 +186,9 @@ def test_terminal_evaluation_is_bound_as_non_executable_shadow_attempt(tmp_path)
     repo, kwargs = setup(tmp_path, declared=True)
     params = inputs()
     symbols = [row["symbol"] for row in params["candidates"]]
-    repo.start_stage("S5_5")
-    repo.commit_stage(
-        "S5_5",
-        {"stage": "S5_5", "status": "SUCCESS", "input_symbols": symbols,
-         "output_symbols": symbols, "rows": [{"symbol": symbol, "selected": True} for symbol in symbols]},
-        metadata=params["context"].to_dict() | {
-            "snapshot_id": params["snapshot_id"], "config_hash": params["config"].config_hash,
-        }, elapsed=0,
-    )
-    stage_hashes = {name: repo.load_stage(name)["artifact_hash"] for name in ("S4", "S5", "S5_5")}
+    realtime_stage = load_terminal_realtime_stage(repo, "synthetic-quote")
+    stage_hashes = {name: repo.load_stage(name)["artifact_hash"] for name in ("S4", "S5")}
+    stage_hashes["S5_5"] = realtime_stage["artifact_hash"]
     as_of = params["context"].as_of
     terminal_config = load_terminal_strategy_config()
     leaderboard = tuple(
@@ -244,6 +238,7 @@ def test_terminal_evaluation_is_bound_as_non_executable_shadow_attempt(tmp_path)
     assert result["portfolio_status"] == "NOT_READY"
     assert result["execution_ready"] is False and result["production_accepted"] is False
     assert "TERMINAL_POLICY_SHADOW_ONLY" in result["risk_checks"]["blocking_reasons"]
+    assert repo.load_stage("S5_5") is None
     assert repo.load_stage("S6") is None
     assert not (repo.directory / "portfolio-seal.json").exists()
     attempt = repo.directory / "portfolio-attempts" / "terminal-shadow"

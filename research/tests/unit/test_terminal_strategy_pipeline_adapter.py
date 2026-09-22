@@ -153,6 +153,24 @@ def test_stage_identity_relation_mismatch_is_fail_closed():
     assert CandidateAdapterBlocker.STAGE_RELATION_INVALID in result.diagnostics.blockers
 
 
+def test_partial_status_is_only_allowed_for_realtime_stage():
+    values = _inputs()
+    partial = dict(values["s5_5_stage"])
+    body = {key: value for key, value in partial.items() if key != "artifact_hash"}
+    body["status"] = "PARTIAL"
+    values["s5_5_stage"] = body | {"artifact_hash": content_hash(body)}
+    assert adapt_pipeline_candidates(**values).candidates
+
+    for name in ("s4_stage", "s5_stage"):
+        changed = _inputs()
+        body = {key: value for key, value in changed[name].items() if key != "artifact_hash"}
+        body["status"] = "PARTIAL"
+        changed[name] = body | {"artifact_hash": content_hash(body)}
+        result = adapt_pipeline_candidates(**changed)
+        assert result.candidates == ()
+        assert CandidateAdapterBlocker.STAGE_STATUS_NOT_SUCCESS in result.diagnostics.blockers
+
+
 def test_duplicate_row_symbol_is_rejected():
     values = _inputs(symbols=[SYMBOLS[0]])
     row = values["s4_stage"]["rows"][0]

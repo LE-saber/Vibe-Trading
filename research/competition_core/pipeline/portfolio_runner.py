@@ -43,7 +43,7 @@ def _terminal_store(repository):
     return TerminalEvaluationPersistence(Path(repository.directory).resolve().parent)
 
 
-def _terminal_binding(*, repository, evaluation_id, stages, context, account, observed_at):
+def _terminal_binding(*, repository, evaluation_id, stages, context, account, observed_at, check_id):
     """Load and bind one immutable terminal evaluation to this pipeline run."""
 
     try:
@@ -56,7 +56,8 @@ def _terminal_binding(*, repository, evaluation_id, stages, context, account, ob
     source = loaded["source_hashes"]
     s55 = repository.load_stage("S5_5")
     if s55 is None:
-        raise PipelineError("NOT_READY", "terminal evaluation requires a current S5_5 stage")
+        from competition_core.terminal_strategy.realtime_stage import load_terminal_realtime_stage
+        s55 = load_terminal_realtime_stage(repository, check_id)
     current_stage_hashes = {
         "s4_hash": stages["S4"]["artifact_hash"],
         "s5_hash": stages["S5"]["artifact_hash"],
@@ -273,6 +274,7 @@ def run_portfolio_draft(*, repository, check_id, account, fees, trading_metadata
                 context=context,
                 account=account,
                 observed_at=observed_at,
+                check_id=check_id,
             )
             terminal_binding_payload = _terminal_binding_payload(
                 terminal_binding, pipeline_config_hash=config.config_hash)

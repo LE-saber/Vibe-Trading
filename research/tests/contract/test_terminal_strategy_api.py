@@ -131,6 +131,51 @@ def test_cutoff_null_evaluate_is_auditable_unavailable_and_readers_only(client, 
     assert calls["stages"] == ["S4", "S5", "S5_5"]
 
 
+def test_evaluate_uses_latest_verified_realtime_observation_when_s5_5_is_uncommitted(
+    client, monkeypatch,
+):
+    client, tasks = client
+    run_id = "terminal-realtime-fallback"
+    _task(tasks, run_id)
+    values = candidate_inputs()
+    calls = {"stage": None}
+
+    class ObservationRepository:
+        def __init__(self, root, value):
+            assert Path(root) == tasks.root and value == run_id
+            self.run_id = value
+
+        def load_stage(self, stage):
+            if stage == "S5_5":
+                return None
+            return values[{"S4": "s4_stage", "S5": "s5_stage"}[stage]]
+
+        def state(self):
+            return {"last_realtime_check": "verified-observation"}
+
+    def projected(repository, check_id):
+        calls["stage"] = (repository.run_id, check_id)
+        return values["s5_5_stage"]
+
+    monkeypatch.setattr(pipeline_persistence, "PipelineRepository", ObservationRepository)
+    monkeypatch.setattr(
+        "competition_core.terminal_strategy.realtime_stage.load_terminal_realtime_stage",
+        projected,
+    )
+    app.dependency_overrides[get_ninef_account_reader] = lambda: _account
+
+    def leaderboard_reader():
+        from test_terminal_strategy_snapshot_adapter import _leaderboard_view
+        return _leaderboard_view()
+
+    app.dependency_overrides[get_ninef_leaderboard_reader] = lambda: leaderboard_reader
+    response = client.post(f"/pipeline/runs/{run_id}/terminal/evaluate", json={}, headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert calls["stage"] == (run_id, "verified-observation")
+    assert response.json()["execution_ready"] is False
+
+
 def test_evaluate_requires_explicit_write_auth_and_forbids_extra_fields(client):
     client, tasks = client
     run_id = "terminal-auth-fixture"

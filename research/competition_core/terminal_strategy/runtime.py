@@ -51,6 +51,7 @@ _IMPLEMENTATION_FILES = (
     "models.py",
     "persistence.py",
     "pipeline_adapter.py",
+    "realtime_stage.py",
     "runtime.py",
     "service.py",
     "snapshot_adapter.py",

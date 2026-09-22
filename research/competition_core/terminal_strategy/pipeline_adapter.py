@@ -304,7 +304,8 @@ def _load_stage(name: str, payload: Mapping[str, Any], collector: _DiagnosticBui
         return None
     if payload.get("stage") != name:
         collector.blocker(PipelineAdapterBlocker.STAGE_IDENTITY_INVALID, name)
-    if payload.get("status") != "SUCCESS":
+    allowed_statuses = {"SUCCESS", "PARTIAL"} if name == "S5_5" else {"SUCCESS"}
+    if payload.get("status") not in allowed_statuses:
         collector.blocker(PipelineAdapterBlocker.STAGE_STATUS_NOT_SUCCESS, name)
     inputs = _symbols(payload.get("input_symbols"), collector, PipelineAdapterBlocker.STAGE_IDENTITY_INVALID)
     outputs = _symbols(payload.get("output_symbols"), collector, PipelineAdapterBlocker.STAGE_IDENTITY_INVALID)

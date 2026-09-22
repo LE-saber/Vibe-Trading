@@ -245,11 +245,19 @@ def _terminal_stage_bundle(tasks, run_id: str):
     directory = checked_directory(tasks.root, run_id)
     repository = PipelineRepository(directory.parent, run_id)
     stages = {}
-    for stage in ("S4", "S5", "S5_5"):
+    for stage in ("S4", "S5"):
         value = repository.load_stage(stage)
         if value is None:
             raise PipelineError("NOT_READY", "terminal source stage is unavailable", stage=stage)
         stages[stage] = value
+    s5_5 = repository.load_stage("S5_5")
+    if s5_5 is None:
+        check_id = repository.state().get("last_realtime_check")
+        if not isinstance(check_id, str):
+            raise PipelineError("NOT_READY", "terminal realtime observation is unavailable", stage="S5_5")
+        from competition_core.terminal_strategy.realtime_stage import load_terminal_realtime_stage
+        s5_5 = load_terminal_realtime_stage(repository, check_id)
+    stages["S5_5"] = s5_5
     return directory, stages
 
 
