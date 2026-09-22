@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 from competition_core.pipeline.account import AccountPosition, AccountSnapshot
+from competition_core.pipeline.artifacts import content_hash
 from competition_core.pipeline.time_context import SHANGHAI
 
 if TYPE_CHECKING:
@@ -377,6 +378,7 @@ def fetch_ninef_account(
     available = _money(assets.get("availableFunds"), "available funds")
     frozen = _money(assets.get("frozenFunds"), "frozen funds")
     pending = sum(1 for row in orders if row["status"] in _OPEN_STATUSES)
+    unknown_count = sum(1 for row in orders if row["status"] == "UNKNOWN")
 
     # Bind the contract to the position observation itself.  The provider's
     # separately sampled total-assets mark may move while quotes update and
@@ -416,10 +418,11 @@ def fetch_ninef_account(
             "order_pages": [_hash_payload(payload) for payload in order_payloads],
             "assets_end": _hash_payload(assets_end),
         },
-        "orders": {"complete": True, "count": len(orders), "open_count": pending, "items": orders},
+        "orders": {"complete": True, "count": len(orders), "open_count": pending,
+                    "unknown_count": unknown_count, "items": orders},
         "collection_consistent": True,
         "account_snapshot_hash": snapshot.snapshot_hash,
-        "fee_schedule_hash": _hash_payload(fee_schedule.to_dict()) if fee_schedule else None,
+        "fee_schedule_hash": content_hash(fee_schedule.to_dict()) if fee_schedule else None,
     }
     return NinefAccountFetch(snapshot=snapshot, fee_schedule=fee_schedule, receipt=receipt)
 
