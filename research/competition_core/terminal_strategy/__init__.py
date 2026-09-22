@@ -95,6 +95,7 @@ from .runtime import (
     run_terminal_runtime,
     terminal_implementation_hash,
 )
+from .portfolio_bridge import TerminalPolicyValidation, validate_terminal_policy
 from .models import (
     AwardLineForecast,
     AwardLinePoint,
@@ -149,4 +150,5 @@ __all__ = [
     "RuntimeDiagnostics", "RuntimeResult", "TerminalRuntime", "TerminalRuntimeResult",
     "evaluate_terminal_runtime", "run_terminal_evaluation_runtime", "run_terminal_runtime",
     "terminal_implementation_hash",
+    "TerminalPolicyValidation", "validate_terminal_policy",
 ]
