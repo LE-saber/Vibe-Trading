@@ -1,0 +1,56 @@
+version: terminal.v1
+competition:
+  # Null is intentional until the competition rules explicitly confirm the
+  # award cutoff.  The terminal state machine fails closed instead of treating
+  # leaderboard.top_n as a prize rule.
+  award_rank_cutoff: null
+  award_rule_source: null
+  final_trade_date: "2026-09-30"
+
+award_line:
+  safety_buffer_min: 0.005
+  safety_buffer_base: 0.010
+  safety_buffer_max: 0.015
+  history_sessions: 5
+  min_valid_snapshots: 3
+  max_snapshot_age_seconds: 900
+  forecast_method: ewma_scenario_v1
+
+mode:
+  normal_gap_max: 0.03
+  attack_gap_max: 0.07
+  last_shot_min_gap: 0.07
+  protect_lead_min: 0.01
+  hysteresis: 0.005
+  downgrade_confirmations: 2
+  last_shot_only_on_final_session: true
+
+funnel:
+  watch_count: 10
+  focus_count: 5
+  terminal_count_min: 2
+  terminal_count_max: 3
+  continuity_sessions: 3
+  minimum_liquidity_score: 60
+  maximum_intraday_drawdown: 0.06
+
+allocation:
+  protect_aggressive_cap: 0.10
+  normal_aggressive_target: 0.30
+  attack_aggressive_min: 0.40
+  attack_aggressive_max: 0.60
+  last_shot_aggressive_cap: 0.60
+  protect_cash_target: 0.20
+  normal_cash_target: 0.15
+  attack_cash_target: 0.10
+  last_shot_cash_target: 0.10
+  new_listing_final_day_cap: 0.20
+
+schedule:
+  candidate_rank: "09:00"
+  opening_observation_end: "10:00"
+  midday_refresh: "13:15"
+  primary_decision: "13:30"
+  final_revision: "14:10"
+  main_order_deadline: "14:25"
+  risk_freeze: "14:35"
