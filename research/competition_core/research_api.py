@@ -414,44 +414,18 @@ def terminal_evaluate(
     leaderboard_reader=Depends(get_ninef_leaderboard_reader),
 ):
     """Evaluate terminal strategy facts without exposing any write capability."""
+    from competition_core.terminal_strategy.orchestration import evaluate_terminal_request
 
-    from competition_core.terminal_strategy import load_terminal_strategy_config
-    from competition_core.terminal_strategy.api_views import decision_projection
-    from competition_core.terminal_strategy.runtime import run_terminal_runtime
-
-    _, stages = _terminal_stage_bundle(tasks, run_id)
-    config = load_terminal_strategy_config()
-    previous_mode = _previous_terminal_mode(tasks, run_id, body.previous_mode)
-    account_view = _imported_terminal_account_view(tasks, run_id)
-    if account_view is None:
-        account_view = account_reader()
-    leaderboard_view = leaderboard_reader()
-    runtime = run_terminal_runtime(
-        run_id,
-        stages["S4"],
-        stages["S5"],
-        stages["S5_5"],
-        account_view,
-        leaderboard_view,
-        _terminal_now(tasks),
-        config,
-        tasks.root,
-        previous_mode=previous_mode,
-        downgrade_confirmation_count=body.downgrade_confirmation_count,
-        same_day_exit_unavailable_symbols=body.same_day_exit_unavailable_symbols,
+    return evaluate_terminal_request(
+        tasks=tasks,
+        run_id=run_id,
+        account_reader=account_reader,
+        leaderboard_reader=leaderboard_reader,
         core_symbols=body.core_symbols,
+        same_day_exit_unavailable_symbols=body.same_day_exit_unavailable_symbols,
+        previous_mode=body.previous_mode,
+        downgrade_confirmation_count=body.downgrade_confirmation_count,
     )
-    if runtime.evaluation is None or runtime.path is None:
-        if runtime.diagnostics.persistence_error:
-            raise PipelineError("STALE_DATA", "terminal evaluation could not be immutably persisted")
-        code = "NOT_READY" if runtime.status == "BLOCKED" else "SOURCE_UNAVAILABLE"
-        raise PipelineError(code, "terminal evaluation is unavailable")
-    response = decision_projection(runtime.evaluation)
-    response["diagnostics"] = {
-        "blockers": list(runtime.diagnostics.blockers),
-        "reasons": list(runtime.diagnostics.reasons),
-    }
-    return response
 
 
 @router.post("/runs/{run_id}/terminal/plan")
