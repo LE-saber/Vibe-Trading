@@ -15,9 +15,12 @@ Push-Location research
 Pop-Location
 ```
 
-Use `--runs-root PATH` before or after the command when operating a specific
-ResearchTasks root. Every command writes bounded JSON to stdout. Failures write
-stable, redacted JSON to stderr and return a non-zero exit code.
+Use `--runs-root PATH` before or after the terminal-strategy command when
+operating a specific ResearchTasks root. For a custom root, pass the same
+`--runs-root PATH` to `check-realtime.py` and `check-execution-status.py` too;
+otherwise all three scripts default to `research/runs`. Every command writes
+bounded JSON to stdout. Failures write stable, redacted JSON to stderr and
+return a non-zero exit code.
 
 `evaluate` needs committed S4/S5 and a verified realtime observation. `plan`
 also needs a complete terminal evaluation, current realtime and execution
@@ -33,12 +36,12 @@ For a current research run, use this order:
 # 1. An existing completed S5 run is required.
 ..\.venv\Scripts\python.exe scripts\terminal-strategy.py sync-inputs RUN_ID
 
-# 2. Save a fresh read-only quote observation. Supply the same account export
-#    used for the Ninef input when held instruments must be included.
-..\.venv\Scripts\python.exe scripts\check-realtime.py --run-id RUN_ID --account-file account.json
+# 2. Save a fresh read-only quote observation. With no account file, the
+#    script automatically loads the verified imported account from sync-inputs.
+..\.venv\Scripts\python.exe scripts\check-realtime.py --runs-root PATH --run-id RUN_ID
 
 # 3. Save current execution references (still read-only).
-..\.venv\Scripts\python.exe scripts\check-execution-status.py --run-id RUN_ID --account-file account.json
+..\.venv\Scripts\python.exe scripts\check-execution-status.py --runs-root PATH --run-id RUN_ID
 
 # 4. Evaluate and inspect the persisted decision/candidate tiers.
 ..\.venv\Scripts\python.exe scripts\terminal-strategy.py evaluate RUN_ID
@@ -52,7 +55,12 @@ For a current research run, use this order:
 ```
 
 `check-realtime.py` and `check-execution-status.py` are existing read-only
-observation commands. They do not submit orders. If the configured
+observation commands. When `--account-file` is omitted, both commands reuse
+the run's verified content-addressed account import, including held positions;
+a present but invalid pointer/import fails closed. A run with no pointer keeps
+the legacy account-less behavior for ordinary non-terminal checks. An explicit
+`--account-file` remains available for compatibility. These commands do not
+submit orders. If the configured
 `award_rank_cutoff` or `award_rule_source` is not confirmed, `evaluate` remains
 auditable but returns `UNAVAILABLE`; it never infers an award line from a
 leaderboard display. `plan` is permanently shadow-only.
