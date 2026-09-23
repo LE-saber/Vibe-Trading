@@ -1,5 +1,8 @@
 # IPO Sprint Pool
 
+For the competition workflow, operational checkpoints and Chinese command
+examples, see [新股冲刺池：流程与使用手册](IPO_SPRINT_GUIDE_ZH.md).
+
 The IPO sprint collector and evaluator form an independent, read-only route.
 The collector builds a standalone `competition.ipo-sprint-snapshot.v1` JSON
 file from Tushare identity/calendar/daily/announcement data and a bounded Sina

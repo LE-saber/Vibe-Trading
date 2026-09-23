@@ -31,6 +31,30 @@ identity, calendar, daily/liquidity, announcement risk review and live level-1
 facts. It writes an independent snapshot/result pair tagged `IPO_SPRINT` and
 does not update a research run, candidate stage, portfolio attempt or plan.
 
+## IPO sprint operational stages
+
+```text
+new_share + stock_basic + trade_cal
+        ↓ identity and unbounded-session screen
+daily + daily_basic + anns_d + fresh level-1 quote
+        ↓ permanent risk, liquidity and tradability gates
+ranked IPO_SPRINT candidates
+        ↓ repeated snapshots at separate observation times
+operator-maintained pre-observation pool
+        ↓ full recollection immediately before the decision
+final heavy-position candidates (human decision only)
+```
+
+The collector and evaluator automate the first ranked candidate result and the
+fresh pre-trade gate. A pre-observation pool is formed by comparing consecutive
+standalone result files; it is not written into S4/S5 or represented as an S6
+portfolio. The final heavy-position decision additionally depends on the live
+award-line gap, remaining sessions, account position limits and T+1 exposure.
+Those account-aware decisions remain outside `IPO_SPRINT`, which deliberately
+cannot create plans or orders. See
+[`research/docs/IPO_SPRINT_GUIDE_ZH.md`](../research/docs/IPO_SPRINT_GUIDE_ZH.md)
+for the operator workflow.
+
 ## Disabled terminal-strategy experiment
 
 The terminal state machine selects `PROTECT`, `NORMAL`, `ATTACK` or

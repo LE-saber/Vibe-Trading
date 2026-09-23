@@ -89,7 +89,9 @@ Pop-Location
 ```
 
 无涨跌幅限制新股的冲刺观察池使用独立 CLI 和独立 JSON，不进入原 S0-S6：
-[IPO Sprint 使用说明](research/docs/IPO_SPRINT.md)。
+[中文流程与使用手册](research/docs/IPO_SPRINT_GUIDE_ZH.md)说明如何从初筛、
+预观察、交易前趋势复核走到人工重仓决策；完整字段契约见
+[IPO Sprint 技术说明](research/docs/IPO_SPRINT.md)。
 
 当前整理基线：工作台收集 140 项测试；研究包收集 1032 项测试。最终提交对应的
 实测结果记录在 [验证报告](docs/VERIFICATION.md)。
