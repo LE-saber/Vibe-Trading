@@ -20,25 +20,28 @@ browser JavaScript, audits execution write entrypoints and builds a wheel. Add
 - normal startup leaves all external writes disabled;
 - a real research request can report S0-S5 progress and produce a schema-valid
   result; missing data/model/account facts are explicit blockers;
-- S6 remains the only route from research output to a target portfolio.
-- terminal evaluations and portfolio attempts remain shadow-only and cannot
-  create an execution plan, approval, intent or order;
-- terminal CLI commands operate without FastAPI and redact provider failures.
+- S6 follows the original portfolio and execution-plan path;
+- the main research API exposes no terminal routes;
+- terminal allocation contracts are not accepted by S6 or the portfolio runner;
+- the IPO sprint route has its own input/output contracts, carries the
+  `IPO_SPRINT` origin marker and cannot create a plan or order;
+- IPO candidates must pass listing-window, risk, liquidity and current
+  two-sided-book gates independently of S0-S6.
 
-## Consolidation baseline
+## Verified baseline
 
 Verified on Windows with Python 3.13:
 
-- canonical workbench: 159 passed;
-- research: 1067 collected, 1066 passed and 1 intentionally skipped;
-- Python byte compilation: passed;
-- browser JavaScript syntax: passed;
-- write-entrypoint audit: passed, no violations;
-- wheel build: passed.
-
-The terminal regression includes dynamic remaining-session derivation, immutable
-evaluation persistence, imported Ninef account/order evidence, uncommitted S5.5
-observations, 10/5/2–3 funnel behavior, mode-aware allocation, a real synthetic
-shadow-plan attempt and explicit execution-plan rejection.
+- canonical workbench: 140 passed;
+- research package: 1032 collected; full suite passed with one intentional skip;
+- IPO sprint collector/evaluator: 24 passed;
+- original S0-S6 files match the pre-terminal-integration baseline;
+- Python byte compilation and Git whitespace check passed.
 
 The remaining warning is Starlette's upstream deprecation of an AnyIO alias.
+
+## Focused regression
+
+The detachment regression covers the existing S6 portfolio pipeline,
+execution-plan validation and daily workflow schedule, together with the
+absence of terminal routes on the main research API.

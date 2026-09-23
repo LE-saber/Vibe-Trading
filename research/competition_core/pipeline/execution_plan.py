@@ -50,8 +50,6 @@ _ATTEMPT_FILES = frozenset(
     }
 )
 _DEMO_MARKERS = ("synthetic", "demo", "fixture", "mock", "fake")
-_TERMINAL_SHADOW_BLOCKER = "TERMINAL_POLICY_SHADOW_ONLY"
-_TERMINAL_SHADOW_ALLOCATION_MARKER = "terminal_shadow"
 
 
 def _fail(code: str, message: str, **details: Any) -> None:
@@ -128,36 +126,6 @@ def _reject_demo(*values: Any) -> None:
     text = " ".join(str(value).lower() for value in values if value is not None)
     if any(marker in text for marker in _DEMO_MARKERS):
         _fail("NOT_READY", "demo or synthetic input cannot create an execution plan")
-
-
-def _has_terminal_shadow(value: Any) -> bool:
-    """Return whether a portfolio/request carries the terminal shadow boundary."""
-
-    if not isinstance(value, dict):
-        return False
-    if any(key in value for key in ("terminal_evaluation_id", "terminal_manifest_hash")):
-        return True
-    if isinstance(value.get("allocation_version"), str):
-        if _TERMINAL_SHADOW_ALLOCATION_MARKER in value["allocation_version"]:
-            return True
-    policy = value.get("policy")
-    if isinstance(policy, dict) and any(
-        key in policy for key in ("terminal_shadow", "terminal_evaluation_binding")
-    ):
-        return True
-    summary = value.get("summary")
-    if isinstance(summary, dict) and (
-        summary.get("terminal_shadow_only") is True
-        or "terminal_evaluation_id" in summary
-    ):
-        return True
-    risk_checks = value.get("risk_checks")
-    if isinstance(risk_checks, dict) and (
-        risk_checks.get("terminal_policy_shadow_only") is True
-        or _TERMINAL_SHADOW_BLOCKER in risk_checks.get("blocking_reasons", [])
-    ):
-        return True
-    return False
 
 
 def _validate_attempt_files(root: Path, seal: dict[str, Any], directory: Path) -> None:
@@ -464,8 +432,6 @@ def _validate_seal(repository: Any) -> dict[str, Any]:
              "STALE_DATA", "holding review consumption is not sealed for this account")
     portfolio = _read(root / "portfolio.json", label="published portfolio")
     _require(isinstance(portfolio, dict), "STALE_DATA", "published portfolio is invalid")
-    _require(not _has_terminal_shadow(portfolio) and not _has_terminal_shadow(request), "NOT_READY",
-             "terminal shadow portfolio cannot create an execution plan")
     _require(portfolio.get("stage") == "S6" and portfolio.get("portfolio_status") == "DRAFT_READY"
              and portfolio.get("execution_ready") is True and portfolio.get("production_accepted") is False
              and portfolio.get("execution_mode") == "MANUAL_CONFIRM", "NOT_READY",

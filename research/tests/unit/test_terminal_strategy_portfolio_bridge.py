@@ -1,17 +1,15 @@
-from copy import deepcopy
-from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from inspect import signature
 
 from competition_core.pipeline.portfolio import build_portfolio
+from competition_core.pipeline.portfolio_runner import run_portfolio_draft
 from competition_core.terminal_strategy import (
     TerminalAllocationPolicy,
     TerminalMode,
     validate_terminal_policy,
 )
 from tests.pipeline_fixtures import context
-
-from test_pipeline_portfolio import inputs
 
 
 def _hash(label: str) -> str:
@@ -51,76 +49,9 @@ def _policy(*, mode=TerminalMode.NORMAL, same_day=()):
     )
 
 
-def _build(policy):
-    values = inputs()
-    values["terminal_policy"] = policy
-    return build_portfolio(**values)
-
-
-def test_terminal_policy_drives_roles_and_budget_but_stays_shadow_only():
-    result = _build(_policy())
-    assert result["allocation_version"] == "inventory_sleeves.v1+terminal_shadow.v1"
-    assert result["status"] == "PARTIAL"
-    assert result["portfolio_status"] == "NOT_READY"
-    assert result["execution_ready"] is False and result["production_accepted"] is False
-    assert "TERMINAL_POLICY_SHADOW_ONLY" in result["risk_checks"]["blocking_reasons"]
-    selected = [row for row in result["rows"] if row["selected"]]
-    assert len(selected) == 6
-    assert {row["symbol"] for row in selected if row["terminal_role"] == "AGGRESSIVE"} == {
-        "600005.SH", "600006.SH"
-    }
-    assert all(row["terminal_role"] == "CORE" for row in selected if row["symbol"] in {"600001.SH", "600002.SH", "600003.SH", "600004.SH"})
-    assert result["summary"]["terminal_policy_hash"] == _policy().policy_hash
-
-
-def test_protect_preserves_core_and_adds_no_aggressive_risk():
-    result = _build(_policy(mode=TerminalMode.PROTECT))
-    selected = [row for row in result["rows"] if row["selected"]]
-    assert len(selected) == 6
-    assert all(row["terminal_role"] == "CORE" for row in selected)
-    assert result["policy"]["terminal_shadow"]["aggressive_symbols"] == []
-    assert result["policy"]["terminal_shadow"]["aggressive_budget"] == "0"
-
-
-def test_same_day_exit_fact_is_retained_in_policy_and_rows():
-    result = _build(_policy(same_day=("600005.SH",)))
-    row = next(item for item in result["rows"] if item["symbol"] == "600005.SH")
-    assert row["same_day_exit_unavailable"] is True
-    assert result["policy"]["terminal_shadow"]["same_day_exit_unavailable"] == ["600005.SH"]
-
-
-def test_policy_budget_math_shortfall_blocks_without_cross_sleeve_scaling():
-    values = inputs()
-    values["account"] = values["account"].__class__.from_dict(
-        values["account"].to_dict() | {"available_cash": "1000.00"}
-    )
-    values["terminal_policy"] = _policy()
-    result = build_portfolio(**values)
-    assert result["portfolio_status"] == "NOT_READY"
-    assert "TERMINAL_POLICY_CASH_CONSTRAINT" in result["risk_checks"]["blocking_reasons"]
-    assert result["risk_checks"]["terminal_policy_no_cross_sleeve_redistribution"] is True
-    assert all(row["target_quantity"] is None for row in result["rows"])
-
-
-def test_invalid_policy_hash_or_candidate_identity_never_falls_back_to_legacy_selector():
-    invalid_hash = deepcopy(_policy().to_dict())
-    invalid_hash["config_hash"] = "not-a-hash"
-    result = _build(invalid_hash)
-    assert result["portfolio_status"] == "NOT_READY"
-    assert "TERMINAL_POLICY_SCHEMA_INVALID" not in result["risk_checks"]["blocking_reasons"]
-    assert "TERMINAL_POLICY_HASH_INVALID" in result["risk_checks"]["blocking_reasons"]
-    assert result["output_symbols"] == []
-
-    wrong_candidate = replace(
-        _policy(),
-        aggressive_symbols=("600099.SH", "600010.SH"),
-        total_position_count=6,
-        terminal_candidate_count=2,
-    )
-    result = _build(wrong_candidate)
-    assert result["portfolio_status"] == "NOT_READY"
-    assert "TERMINAL_POLICY_CANDIDATE_IDENTITY" in result["risk_checks"]["blocking_reasons"]
-    assert result["output_symbols"] == []
+def test_terminal_allocation_contract_is_not_consumed_by_s6():
+    assert "terminal_policy" not in signature(build_portfolio).parameters
+    assert "terminal_evaluation_id" not in signature(run_portfolio_draft).parameters
 
 
 def test_policy_dict_requires_exact_v1_and_hash_binding():

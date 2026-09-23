@@ -14,161 +14,14 @@ from competition_core.pipeline.portfolio import build_portfolio, _metadata
 from competition_core.pipeline.realtime import _inputs, _fingerprint as quote_fingerprint
 from competition_core.pipeline.realtime_gate import evaluate_realtime_quotes
 from competition_core.pipeline.time_context import SHANGHAI
-from competition_core.terminal_strategy.persistence import (
-    TerminalEvaluationPersistence,
-    TerminalPersistenceError,
-)
-from competition_core.terminal_strategy.portfolio_bridge import validate_terminal_policy
-from competition_core.terminal_strategy.models import TerminalModelError, TerminalSnapshot
 
 ROOT = Path(__file__).resolve().parents[2]
-_TERMINAL_EVALUATION_ID = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _id(value):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", value):
         raise PipelineError("INVALID_ARGUMENTS", "invalid portfolio/check identifier")
     return value
-
-
-def _terminal_evaluation_id(value):
-    if not isinstance(value, str) or _TERMINAL_EVALUATION_ID.fullmatch(value) is None:
-        raise PipelineError("INVALID_ARGUMENTS", "invalid terminal evaluation identifier")
-    return value
-
-
-def _terminal_store(repository):
-    """Resolve the repository's sibling ``runs`` root without accepting a path."""
-
-    return TerminalEvaluationPersistence(Path(repository.directory).resolve().parent)
-
-
-def _terminal_binding(*, repository, evaluation_id, stages, context, account, observed_at, check_id):
-    """Load and bind one immutable terminal evaluation to this pipeline run."""
-
-    try:
-        loaded = _terminal_store(repository).load(repository.run_id, evaluation_id)
-    except TerminalPersistenceError as exc:
-        raise PipelineError("STALE_DATA", "terminal evaluation integrity or identity check failed") from exc
-
-    manifest = loaded["manifest"]
-    artifacts = loaded["artifacts"]
-    source = loaded["source_hashes"]
-    s55 = repository.load_stage("S5_5")
-    if s55 is None:
-        from competition_core.terminal_strategy.realtime_stage import load_terminal_realtime_stage
-        s55 = load_terminal_realtime_stage(repository, check_id)
-    current_stage_hashes = {
-        "s4_hash": stages["S4"]["artifact_hash"],
-        "s5_hash": stages["S5"]["artifact_hash"],
-        "s5_5_hash": s55["artifact_hash"],
-    }
-    for field, expected in current_stage_hashes.items():
-        if source.get(field) != expected or manifest.get(field) != expected:
-            raise PipelineError("STALE_DATA", "terminal evaluation is bound to different research stages")
-
-    if account is None or source.get("account_snapshot_hash") != account.snapshot_hash:
-        raise PipelineError("STALE_DATA", "terminal evaluation account snapshot differs")
-    if manifest.get("account_snapshot_hash") != account.snapshot_hash:
-        raise PipelineError("STALE_DATA", "terminal evaluation manifest account differs")
-
-    snapshot_payload = artifacts.get("terminal-snapshot.json")
-    try:
-        snapshot = TerminalSnapshot.from_dict(snapshot_payload)
-    except (TerminalModelError, TypeError, ValueError) as exc:
-        raise PipelineError("STALE_DATA", "terminal evaluation snapshot is invalid") from exc
-    if snapshot.trade_date != context.research_date:
-        raise PipelineError("STALE_DATA", "terminal snapshot date differs from pipeline context")
-    if snapshot.as_of > observed_at:
-        raise PipelineError("STALE_DATA", "terminal snapshot is newer than portfolio observation")
-    if snapshot.account_snapshot_hash != account.snapshot_hash:
-        raise PipelineError("STALE_DATA", "terminal snapshot account differs")
-
-    allocation = artifacts.get("allocation-policy.json")
-    if not isinstance(allocation, dict):
-        raise PipelineError("STALE_DATA", "terminal allocation artifact is invalid")
-    allocation_hash = manifest.get("allocation_policy_hash")
-    if allocation_hash is None:
-        if allocation.get("available") is not False or allocation.get("policy") is not None:
-            raise PipelineError("STALE_DATA", "terminal unavailable allocation envelope is invalid")
-    else:
-        policy_validation = validate_terminal_policy(
-            allocation,
-            indexed_symbols=stages["S4"]["input_symbols"],
-            holding_symbols={position.symbol for position in account.positions},
-            expected_config_hash=manifest.get("config_hash"),
-            expected_trade_date=context.research_date,
-            observed_at=observed_at,
-        )
-        if not policy_validation.valid or policy_validation.policy is None:
-            raise PipelineError("STALE_DATA", "terminal allocation policy is invalid or stale")
-        policy = policy_validation.policy
-        if policy.policy_hash != allocation_hash:
-            raise PipelineError("STALE_DATA", "terminal allocation policy hash differs")
-        if policy.mode_decision_hash != manifest.get("mode_decision_hash"):
-            raise PipelineError("STALE_DATA", "terminal mode decision binding differs")
-        if policy.funnel_hash != manifest.get("candidate_funnel_hash"):
-            raise PipelineError("STALE_DATA", "terminal funnel binding differs")
-        if policy.config_hash != manifest.get("config_hash"):
-            raise PipelineError("STALE_DATA", "terminal config binding differs")
-
-    if manifest.get("config_hash") != source.get("config_hash"):
-        raise PipelineError("STALE_DATA", "terminal config/source binding differs")
-    mode = artifacts.get("mode-decision.json")
-    terminal_funnel = artifacts.get("candidates-terminal.json")
-    if not isinstance(mode, dict) or not isinstance(terminal_funnel, dict):
-        raise PipelineError("STALE_DATA", "terminal mode/funnel artifacts are invalid")
-    if manifest.get("mode_decision_hash") != content_hash(mode):
-        raise PipelineError("STALE_DATA", "terminal mode decision hash differs")
-    if manifest.get("candidate_funnel_hash") != terminal_funnel.get("funnel_hash"):
-        raise PipelineError("STALE_DATA", "terminal funnel hash differs")
-
-    return {
-        "evaluation_id": evaluation_id,
-        "manifest_hash": manifest["manifest_hash"],
-        "manifest": manifest,
-        "source_hashes": {key: source[key] for key in (
-            "s4_hash", "s5_hash", "s5_5_hash", "account_snapshot_hash",
-            "leaderboard_snapshot_hash", "config_hash", "implementation_hash",
-        )},
-        "allocation_policy": allocation,
-        "allocation_policy_hash": allocation_hash,
-        "mode_decision_hash": manifest["mode_decision_hash"],
-        "funnel_hash": manifest["candidate_funnel_hash"],
-        "terminal_config_hash": manifest["config_hash"],
-    }
-
-
-def _terminal_binding_payload(binding, *, pipeline_config_hash):
-    return {
-        "terminal_evaluation_id": binding["evaluation_id"],
-        "terminal_manifest_hash": binding["manifest_hash"],
-        "terminal_allocation_policy_hash": binding["allocation_policy_hash"],
-        "terminal_mode_decision_hash": binding["mode_decision_hash"],
-        "terminal_funnel_hash": binding["funnel_hash"],
-        "terminal_config_hash": binding["terminal_config_hash"],
-        "pipeline_config_hash": pipeline_config_hash,
-        "terminal_source_hashes": binding["source_hashes"],
-        # Keep the audit field names used by the terminal contract alongside
-        # the explicit terminal_ prefix used to avoid pipeline collisions.
-        "manifest_hash": binding["manifest_hash"],
-        "allocation_policy_hash": binding["allocation_policy_hash"],
-        "mode_decision_hash": binding["mode_decision_hash"],
-        "funnel_hash": binding["funnel_hash"],
-    }
-
-
-def _bind_terminal_result(result, binding_payload):
-    """Attach terminal provenance to both result projections without enabling it."""
-
-    result["policy"] = dict(result.get("policy") or {})
-    result["policy"]["terminal_evaluation_binding"] = dict(binding_payload)
-    result["summary"] = dict(result.get("summary") or {})
-    result["summary"].update(binding_payload, terminal_shadow_only=True)
-    result["execution_ready"] = False
-    result["production_accepted"] = False
-    result["portfolio_status"] = "NOT_READY"
-    return result
 
 
 def _code():
@@ -224,16 +77,13 @@ def _finish_seal(repository, seal, observed_at, account, account_source_hash):
 
 
 def run_portfolio_draft(*, repository, check_id, account, fees, trading_metadata=None,
-                        status_id=None, draft_id=None, clock=None, account_source_hash=None,
-                        terminal_evaluation_id=None):
+                        status_id=None, draft_id=None, clock=None, account_source_hash=None):
     """A new attempt may repair missing inputs without rerunning S0–S5.
 
     Only a real-source DRAFT_READY is sealed as S5_5/S6. Synthetic math and
     NOT_READY outcomes remain labeled attempts, never production checkpoints.
     """
     check_id = _id(check_id)
-    if terminal_evaluation_id is not None:
-        terminal_evaluation_id = _terminal_evaluation_id(terminal_evaluation_id)
     if status_id is not None:
         status_id = _id(status_id)
         if trading_metadata is not None:
@@ -247,8 +97,6 @@ def run_portfolio_draft(*, repository, check_id, account, fees, trading_metadata
             raise PipelineError("NOT_READY", "portfolio requires a valid observation clock")
         seal_path = repository.directory / "portfolio-seal.json"
         if seal_path.exists():
-            if terminal_evaluation_id is not None:
-                raise PipelineError("NOT_READY", "terminal shadow evaluation cannot resume a sealed portfolio")
             seal = read_json(seal_path)
             if seal.pop("integrity_hash", None) != content_hash(seal):
                 raise PipelineError("STALE_DATA", "portfolio seal hash mismatch")
@@ -264,20 +112,6 @@ def run_portfolio_draft(*, repository, check_id, account, fees, trading_metadata
                     or seal["trading_metadata_hash"] != content_hash(trading_metadata)):
                 raise PipelineError("STALE_DATA", "sealed execution terms differ")
             return _finish_seal(repository, seal, observed_at, account, account_source_hash)
-        terminal_binding = None
-        terminal_binding_payload = None
-        if terminal_evaluation_id is not None:
-            terminal_binding = _terminal_binding(
-                repository=repository,
-                evaluation_id=terminal_evaluation_id,
-                stages=stages,
-                context=context,
-                account=account,
-                observed_at=observed_at,
-                check_id=check_id,
-            )
-            terminal_binding_payload = _terminal_binding_payload(
-                terminal_binding, pipeline_config_hash=config.config_hash)
         status_proofs = []
         if status_id is not None:
             from competition_core.pipeline.execution_status_runner import read_run_execution_status
@@ -323,8 +157,6 @@ def run_portfolio_draft(*, repository, check_id, account, fees, trading_metadata
                   "quote_request_hash": observation["request_hash"], "quote_response_hash": observation["response_hash"],
                   "observed_at": observed_at.isoformat(), "check_id": check_id, "draft_id": draft_id,
                   "status_id": status_id, "execution_status_provenance": status_proofs}
-        if terminal_binding_payload is not None:
-            frozen.update(terminal_binding_payload)
         atomic_json(directory / "request.json", frozen, immutable=True)
         # Embed the exact source receipt, not just a currently-live cache pointer.
         atomic_json(directory / "quote-response.json", response, immutable=True)
@@ -349,12 +181,7 @@ def run_portfolio_draft(*, repository, check_id, account, fees, trading_metadata
             result = build_portfolio(candidates=[candidate_by[s] for s in symbols], reviews=stages["S5"]["rows"],
                 quotes=quotes, account=account, fees=fees, trading_metadata=trading_metadata, context=context,
                 config=config, snapshot_id=inputs["snapshot_id"], observed_at=observed_at,
-                benchmark_quote=benchmark_quote, holding_dispositions=holding_consumption,
-                terminal_policy=(terminal_binding["allocation_policy"] if terminal_binding is not None else None))
-            if terminal_binding_payload is not None:
-                result = _bind_terminal_result(result, terminal_binding_payload)
-                if result.get("execution_ready") or result.get("production_accepted"):
-                    raise PipelineError("NOT_READY", "terminal shadow portfolio cannot be execution-ready")
+                benchmark_quote=benchmark_quote, holding_dispositions=holding_consumption)
             gate = evaluate_realtime_quotes(symbols=request["symbols"], quotes=quotes, context=context, config=config,
                                             snapshot_id=inputs["snapshot_id"], observed_at=observed_at,
                                             benchmark_quote=benchmark_quote)
@@ -363,7 +190,7 @@ def run_portfolio_draft(*, repository, check_id, account, fees, trading_metadata
             atomic_json(directory / "gate.json", gate, immutable=True)
             atomic_json(directory / "result.json", result, immutable=True)
             atomic_json(directory / "timing.json", {"elapsed_seconds": round(time.monotonic() - started, 6)}, immutable=True)
-            if result["execution_ready"] and terminal_binding_payload is None:
+            if result["execution_ready"]:
                 seal = {"directory": str(directory.relative_to(repository.directory)).replace("\\", "/"),
                         "account_hash": account.snapshot_hash, "check_id": check_id, "status_id": status_id,
                         "fee_hash": content_hash(fees.to_dict()), "trading_metadata_hash": content_hash(trading_metadata),

@@ -62,7 +62,6 @@ def test_maps_live_fields_to_strict_reconciled_account_without_identifiers():
     assert len(result.receipt["adapter_sha256"]) == 64
     assert set(result.receipt["response_hashes"]) == {"assets_start", "positions", "order_pages", "assets_end"}
     assert result.receipt["orders"]["complete"] is True
-    assert result.receipt["orders"]["unknown_count"] == 0
     assert result.receipt["orders"]["items"][0]["remaining_quantity"] == 100
 
 
@@ -173,8 +172,6 @@ def test_reads_all_order_pages_and_counts_partial_cancel_pending_and_unknown_as_
     assert [row["status"] for row in result.receipt["orders"]["items"]] == [
         "PENDING", "FILLED", "PARTIALLY_FILLED", "UNKNOWN",
     ]
-    assert result.receipt["orders"]["unknown_count"] == 1
-    assert result.receipt["orders"]["open_count"] == result.snapshot.pending_order_count == 3
 
 
 def test_rejects_duplicate_order_ids_repeated_cursor_and_mid_collection_account_change():

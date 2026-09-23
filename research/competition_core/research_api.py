@@ -5,18 +5,14 @@ from datetime import date, datetime
 from functools import wraps
 import os
 from pathlib import Path
-import re
 import secrets
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, Request, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictBool
 
-from competition_core.pipeline.account import AccountSnapshot
-from competition_core.pipeline.artifacts import confined_path, content_hash, read_json
 from competition_core.pipeline.errors import PipelineError
-from competition_core.pipeline.portfolio import FeeSchedule
 from competition_core.pipeline.time_context import SHANGHAI
 from competition_core.research_tasks import ResearchTasks, checked_directory
 
@@ -91,97 +87,6 @@ def get_ninef_leaderboard_reader():
     return get_ninef_leaderboard_view
 
 
-_EXECUTION_IMPORT_ID = re.compile(r"^[0-9a-f]{64}$")
-
-
-def _imported_terminal_account_view(tasks, run_id: str):
-    """Return a verified imported Ninef account view, or ``None`` for fallback.
-
-    An absent execution-inputs pointer is an ordinary first-run condition.  A
-    present pointer is immutable evidence, so malformed or changed content is
-    never hidden by falling back to a live provider read.
-    """
-
-    directory = checked_directory(tasks.root, run_id)
-    raw_pointer_path = directory / "execution-inputs.json"
-    if raw_pointer_path.is_symlink():
-        raise PipelineError("STALE_DATA", "execution input pointer is invalid")
-    pointer_path = confined_path(directory, "execution-inputs.json")
-    if not pointer_path.exists():
-        return None
-    if pointer_path.is_symlink() or not pointer_path.is_file():
-        raise PipelineError("STALE_DATA", "execution input pointer is invalid")
-    try:
-        pointer = read_json(pointer_path)
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise PipelineError("STALE_DATA", "execution input pointer is invalid") from exc
-    if not isinstance(pointer, dict) or set(pointer) != {"id"}:
-        raise PipelineError("STALE_DATA", "execution input pointer is invalid")
-    input_id = pointer.get("id")
-    if not isinstance(input_id, str) or _EXECUTION_IMPORT_ID.fullmatch(input_id) is None:
-        raise PipelineError("STALE_DATA", "execution input identity is invalid")
-    raw_import_root = directory / "execution-imports"
-    raw_import_path = raw_import_root / f"{input_id}.json"
-    if raw_import_root.is_symlink() or raw_import_path.is_symlink():
-        raise PipelineError("STALE_DATA", "execution input import is unavailable")
-    import_root = confined_path(directory, "execution-imports")
-    import_path = confined_path(directory, f"execution-imports/{input_id}.json")
-    if (not import_root.is_dir() or not import_path.is_file()):
-        raise PipelineError("STALE_DATA", "execution input import is unavailable")
-    try:
-        payload = read_json(import_path, expected_hash=input_id)
-    except PipelineError:
-        raise
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise PipelineError("STALE_DATA", "execution input import is invalid") from exc
-    if not isinstance(payload, dict) or not {"account", "fees"} <= set(payload):
-        raise PipelineError("STALE_DATA", "execution input import schema is invalid")
-    if set(payload) - {"account", "fees", "source_receipt"}:
-        raise PipelineError("STALE_DATA", "execution input import schema is invalid")
-    try:
-        account = AccountSnapshot.from_dict(payload["account"])
-        fees = FeeSchedule.from_dict(payload["fees"])
-    except (PipelineError, TypeError, ValueError) as exc:
-        raise PipelineError("STALE_DATA", "execution input account or fee evidence is invalid") from exc
-    if "source_receipt" not in payload:
-        return None
-    receipt = payload["source_receipt"]
-    if not isinstance(receipt, dict):
-        raise PipelineError("STALE_DATA", "execution input source receipt is invalid")
-    if (receipt.get("schema_version") != "ninef.account.fetch.v2"
-            or receipt.get("method") != "GET_ONLY"
-            or receipt.get("collection_consistent") is not True
-            or receipt.get("account_snapshot_hash") != account.snapshot_hash
-            or receipt.get("fee_schedule_hash") != content_hash(fees.to_dict())):
-        raise PipelineError("STALE_DATA", "execution input source receipt is not bound to account")
-    orders = receipt.get("orders")
-    if not isinstance(orders, dict):
-        raise PipelineError("STALE_DATA", "execution input order receipt is invalid")
-    required_order_fields = {"complete", "count", "open_count", "items"}
-    if (not required_order_fields <= set(orders)
-            or type(orders["complete"]) is not bool
-            or orders["complete"] is not True
-            or type(orders["count"]) is not int or orders["count"] < 0
-            or type(orders["open_count"]) is not int or orders["open_count"] < 0
-            or not isinstance(orders["items"], list)
-            or orders["count"] != len(orders["items"])
-            or orders["open_count"] != account.pending_order_count):
-        raise PipelineError("STALE_DATA", "execution input order receipt is incomplete")
-    # Preserve provider-declared unknown fields exactly; never manufacture one.
-    view_orders = dict(orders)
-    return {
-        "schema_version": "competition.account-view.v1",
-        "account": account.to_dict(),
-        "frozen_cash": str(account.cash_balance - account.available_cash),
-        "orders": view_orders,
-        "collection_consistent": True,
-        "fee_evidence_available": True,
-        "orders_submitted": 0,
-        "read_only": True,
-        "account_snapshot_hash": account.snapshot_hash,
-    }
-
-
 def safe_api(function):
     @wraps(function)
     def wrapped(*args, **kwargs):
@@ -236,29 +141,6 @@ class UnknownResolutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     broker_order_id: str
     evidence_ref: str
-
-
-class TerminalEvaluateRequest(BaseModel):
-    """Explicit, bounded input for a read-only terminal evaluation.
-
-    The client cannot supply competition dates, award rules, a mode override,
-    prices, quantities, or any order payload.  ``previous_mode`` is only the
-    state-machine continuity fact and is checked against the latest persisted
-    evaluation before it reaches the runtime.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    core_symbols: list[StrictStr] | None = None
-    same_day_exit_unavailable_symbols: list[StrictStr] | None = None
-    previous_mode: StrictStr | None = None
-    downgrade_confirmation_count: StrictInt = Field(default=0, ge=0, le=10)
-
-
-class TerminalPlanRequest(BaseModel):
-    """Server-bound request for one terminal shadow portfolio attempt."""
-
-    model_config = ConfigDict(extra="forbid")
-    evaluation_id: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 def get_execution_service():
@@ -337,170 +219,6 @@ def daily_workflow():
         "approval_required": True,
         "orders_submitted": 0,
     }
-
-
-def _terminal_stage_bundle(tasks, run_id: str):
-    """Load only checked, repository-verified terminal source stages."""
-
-    from competition_core.pipeline.persistence import PipelineRepository
-
-    directory = checked_directory(tasks.root, run_id)
-    repository = PipelineRepository(directory.parent, run_id)
-    stages = {}
-    for stage in ("S4", "S5"):
-        value = repository.load_stage(stage)
-        if value is None:
-            raise PipelineError("NOT_READY", "terminal source stage is unavailable", stage=stage)
-        stages[stage] = value
-    s5_5 = repository.load_stage("S5_5")
-    if s5_5 is None:
-        check_id = repository.state().get("last_realtime_check")
-        if not isinstance(check_id, str):
-            raise PipelineError("NOT_READY", "terminal realtime observation is unavailable", stage="S5_5")
-        from competition_core.terminal_strategy.realtime_stage import load_terminal_realtime_stage
-        s5_5 = load_terminal_realtime_stage(repository, check_id)
-    stages["S5_5"] = s5_5
-    return directory, stages
-
-
-def _terminal_now(tasks) -> datetime:
-    clock = getattr(tasks, "clock", None)
-    value = clock() if callable(clock) else datetime.now(SHANGHAI)
-    if not isinstance(value, datetime) or value.utcoffset() is None:
-        raise PipelineError("INVALID_ARGUMENTS", "terminal evaluation time must be timezone-aware")
-    return value
-
-
-def _latest_terminal_for_input(tasks, run_id: str):
-    from competition_core.terminal_strategy.api_views import latest_persisted
-
-    try:
-        return latest_persisted(tasks.root, run_id)
-    except PipelineError as exc:
-        if exc.code == "NOT_FOUND":
-            return None
-        raise
-
-
-def _previous_terminal_mode(tasks, run_id: str, requested: str | None):
-    from competition_core.terminal_strategy import TerminalMode
-
-    latest = _latest_terminal_for_input(tasks, run_id)
-    latest_mode = None
-    if latest is not None:
-        latest_mode = latest["artifacts"]["mode-decision.json"].get("mode")
-        try:
-            latest_mode = TerminalMode(latest_mode)
-        except (TypeError, ValueError) as exc:
-            raise PipelineError("STALE_DATA", "latest terminal mode is invalid") from exc
-    if requested is None:
-        return latest_mode
-    try:
-        requested_mode = TerminalMode(requested)
-    except (TypeError, ValueError) as exc:
-        raise PipelineError("INVALID_ARGUMENTS", "previous terminal mode is invalid") from exc
-    if latest_mode is None or requested_mode is not latest_mode:
-        raise PipelineError("INVALID_ARGUMENTS", "previous terminal mode does not match latest evaluation")
-    return requested_mode
-
-
-@router.post("/runs/{run_id}/terminal/evaluate")
-@safe_api
-def terminal_evaluate(
-    run_id: str,
-    body: TerminalEvaluateRequest,
-    tasks=Depends(get_tasks),
-    account_reader=Depends(get_ninef_account_reader),
-    leaderboard_reader=Depends(get_ninef_leaderboard_reader),
-):
-    """Evaluate terminal strategy facts without exposing any write capability."""
-    from competition_core.terminal_strategy.orchestration import evaluate_terminal_request
-
-    return evaluate_terminal_request(
-        tasks=tasks,
-        run_id=run_id,
-        account_reader=account_reader,
-        leaderboard_reader=leaderboard_reader,
-        core_symbols=body.core_symbols,
-        same_day_exit_unavailable_symbols=body.same_day_exit_unavailable_symbols,
-        previous_mode=body.previous_mode,
-        downgrade_confirmation_count=body.downgrade_confirmation_count,
-    )
-
-
-@router.post("/runs/{run_id}/terminal/plan")
-@safe_api
-def terminal_plan(
-    run_id: str,
-    body: TerminalPlanRequest,
-    tasks=Depends(get_tasks),
-):
-    """Create one server-bound, mode-aware terminal portfolio shadow attempt.
-
-    This endpoint deliberately has no execution-service dependency.  The
-    orchestration function revalidates the immutable evaluation, imported
-    account evidence, current run state, and postconditions before returning
-    a bounded projection.
-    """
-
-    from competition_core.research_portfolio import create_terminal_shadow_plan
-
-    return create_terminal_shadow_plan(
-        tasks=tasks,
-        run_id=run_id,
-        evaluation_id=body.evaluation_id,
-    )
-
-
-@router.get("/runs/{run_id}/terminal/decision")
-@safe_api
-def terminal_decision(
-    run_id: str,
-    evaluation_id: str | None = Query(None),
-    tasks=Depends(get_tasks),
-):
-    checked_directory(tasks.root, run_id)
-    from competition_core.terminal_strategy.api_views import load_persisted, persisted_decision_projection
-    return persisted_decision_projection(load_persisted(tasks.root, run_id, evaluation_id))
-
-
-@router.get("/runs/{run_id}/terminal/candidates")
-@safe_api
-def terminal_candidates(
-    run_id: str,
-    tier: str = Query("watch"),
-    evaluation_id: str | None = Query(None),
-    tasks=Depends(get_tasks),
-):
-    checked_directory(tasks.root, run_id)
-    from competition_core.terminal_strategy.api_views import load_persisted, persisted_candidates_projection
-    loaded = load_persisted(tasks.root, run_id, evaluation_id)
-    return persisted_candidates_projection(loaded, tier)
-
-
-@router.get("/runs/{run_id}/terminal/history")
-@safe_api
-def terminal_history(
-    run_id: str,
-    limit: int = Query(20, ge=1, le=100),
-    tasks=Depends(get_tasks),
-):
-    checked_directory(tasks.root, run_id)
-    from competition_core.terminal_strategy.api_views import persisted_history
-    return {
-        "schema_version": "competition.terminal-history-view.v1",
-        "run_id": run_id,
-        "history": persisted_history(tasks.root, run_id, limit),
-        "execution_ready": False,
-        "orders_submitted": 0,
-    }
-
-
-@router.get("/terminal/status")
-@safe_api
-def terminal_status(tasks=Depends(get_tasks)):
-    from competition_core.terminal_strategy.api_views import status_projection
-    return status_projection(tasks.root)
 
 
 @router.get("/runs/{run_id}")

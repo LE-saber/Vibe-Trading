@@ -21,7 +21,6 @@ from competition_core.pipeline.holding_review_consumer import disposition_for
 from competition_core.pipeline.rebalance_quantity import _decimal, plan_quantity
 from competition_core.pipeline.realtime_gate import evaluate_realtime_quotes
 from competition_core.pipeline.time_context import SHANGHAI
-from competition_core.terminal_strategy.portfolio_bridge import validate_terminal_policy
 
 CENT = Decimal("0.01")
 
@@ -169,8 +168,7 @@ def _holding_dispositions(value, *, account, expected):
 
 def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | None,
                     fees: FeeSchedule | None, trading_metadata, context, config,
-                    snapshot_id, observed_at, benchmark_quote=None, holding_dispositions=None,
-                    terminal_policy=None):
+                    snapshot_id, observed_at, benchmark_quote=None, holding_dispositions=None):
     """S4-ranked core/aggressive sleeves with inventory-aware cash arithmetic.
 
     Synthetic accounts can exercise the full math, but never gain production
@@ -185,15 +183,6 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
         raise PipelineError("INVALID_ARGUMENTS", "trading metadata must be a mapping")
     assessment = assess_account(account, context=context, config=config, observed_at=observed_at)
     holdings = {p.symbol: p for p in account.positions} if account else {}
-    terminal_shadow_active = terminal_policy is not None
-    terminal_policy_validation = validate_terminal_policy(
-        terminal_policy,
-        indexed_symbols=indexed,
-        holding_symbols=holdings,
-        expected_trade_date=context.research_date,
-        observed_at=observed_at,
-    )
-    terminal_policy_obj = terminal_policy_validation.policy
     outside_symbols = set(holdings) - set(indexed)
     holding_disposition_by = _holding_dispositions(
         holding_dispositions, account=account, expected=outside_symbols)
@@ -204,7 +193,6 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
     quote_by = {row["symbol"]: row for row in gate["rows"]}
     risk, settings = config.section("risk"), config.section("portfolio")
     blockers = [reason for reason in assessment["reasons"] if reason != "SYNTHETIC_ACCOUNT_NOT_PRODUCTION"]
-    blockers.extend(terminal_policy_validation.blockers)
     if fees is None:
         blockers.append("MISSING_COMPETITION_FEE_SCHEDULE")
     elif fees.as_of > observed_at or not fees.as_of.astimezone(SHANGHAI).date() <= context.research_date <= fees.valid_through:
@@ -263,98 +251,35 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
             eligible.append(symbol)
         review_body = (review or {}).get("ai_review") or {}
         disposition = holding_disposition_by.get(symbol)
-        row = {"symbol": symbol, "name": (candidate or {}).get("name"), "selected": False, "rank": None,
-               "current_quantity": holdings[symbol].quantity if symbol in holdings else 0,
-               "sellable_quantity": holdings[symbol].sellable_quantity if symbol in holdings else 0,
-               "target_quantity": None, "delta_quantity": None, "target_weight": None,
-               "reject_reasons": reasons, "keep_reasons": [],
-               "quant_score": (candidate or {}).get("quant_score"),
-               "selection_score": (candidate or {}).get("selection_score"),
-               "ai_verdict": (review or {}).get("ai_verdict") or (disposition or {}).get("verdict"),
-               "holding_disposition": (disposition or {}).get("disposition"),
-               "ai_risks": review_body.get("risks", []),
-               "missing_fields": quote["missing_fields"] + review_body.get("missing_critical_info", []),
-               "realtime_gate": quote["realtime_gate"], "source_provenance": quote["meta"]}
-        if terminal_shadow_active:
-            row.update(terminal_role=None, same_day_exit_unavailable=False)
-        rows.append(row)
-
-    # Re-check the policy after all existing S6 eligibility gates have run.
-    # This prevents a stale terminal candidate from falling back to the legacy
-    # 70/30 selector when the shadow policy no longer matches today's inputs.
-    if terminal_shadow_active:
-        terminal_policy_validation = validate_terminal_policy(
-            terminal_policy,
-            indexed_symbols=indexed,
-            holding_symbols=holdings,
-            eligible_symbols=eligible,
-            expected_trade_date=context.research_date,
-            observed_at=observed_at,
-        )
-        terminal_policy_obj = terminal_policy_validation.policy
-        blockers.extend(terminal_policy_validation.blockers)
-
-    def result_blockers():
-        values = set(blockers)
-        if terminal_shadow_active:
-            values.add("TERMINAL_POLICY_SHADOW_ONLY")
-        return sorted(values)
-
-    terminal_payload = None
-    if terminal_policy_obj is not None:
-        terminal_payload = terminal_policy_obj.to_dict()
-    elif terminal_shadow_active:
-        terminal_payload = {
-            "schema_version": "competition.terminal-allocation-policy.v1",
-            "available": False,
-            "execution_ready": False,
-            "blockers": list(terminal_policy_validation.blockers),
-            "reasons": list(terminal_policy_validation.reasons),
-        }
-    policy_view = {"risk": risk, "portfolio": settings, "role_rule": "overheat_threshold",
-                   "weight_rule": "equal_within_role_capped_no_cross_role_redistribution",
-                   "sell_proceeds_fund_buys": False}
-    risk_view = {"blocking_reasons": result_blockers(), "constraints_relaxed": False}
-    if terminal_shadow_active:
-        policy_view["terminal_shadow"] = terminal_payload
-        risk_view.update(
-            terminal_policy_shadow_only=True,
-            same_day_exit_unavailable=(
-                list(terminal_policy_obj.same_day_exit_unavailable)
-                if terminal_policy_obj is not None else []
-            ),
-        )
-    result = {"stage": "S6",
-              "allocation_version": ("inventory_sleeves.v1+terminal_shadow.v1"
-                                      if terminal_shadow_active else "inventory_sleeves.v1"),
-              "status": "PARTIAL",
+        rows.append({"symbol": symbol, "name": (candidate or {}).get("name"), "selected": False, "rank": None,
+                     "current_quantity": holdings[symbol].quantity if symbol in holdings else 0,
+                     "sellable_quantity": holdings[symbol].sellable_quantity if symbol in holdings else 0,
+                     "target_quantity": None, "delta_quantity": None, "target_weight": None,
+                     "reject_reasons": reasons, "keep_reasons": [],
+                     "quant_score": (candidate or {}).get("quant_score"),
+                     "selection_score": (candidate or {}).get("selection_score"),
+                     "ai_verdict": (review or {}).get("ai_verdict") or (disposition or {}).get("verdict"),
+                     "holding_disposition": (disposition or {}).get("disposition"),
+                     "ai_risks": review_body.get("risks", []),
+                     "missing_fields": quote["missing_fields"] + review_body.get("missing_critical_info", []),
+                     "realtime_gate": quote["realtime_gate"], "source_provenance": quote["meta"]})
+    result = {"stage": "S6", "allocation_version": "inventory_sleeves.v1", "status": "PARTIAL",
               "portfolio_status": "NOT_READY", "input_symbols": symbols, "output_symbols": [], "rows": rows,
               "account_assessment": assessment, "fee_schedule": fees.to_dict() if fees else None,
               "execution_mode": "MANUAL_CONFIRM", "execution_ready": False, "production_accepted": False,
               "meta": context.to_dict() | {"snapshot_id": snapshot_id, "observed_at": observed_at.isoformat()},
-              "policy": policy_view,
-              "risk_checks": risk_view,
+              "policy": {"risk": risk, "portfolio": settings, "role_rule": "overheat_threshold",
+                         "weight_rule": "equal_within_role_capped_no_cross_role_redistribution",
+                         "sell_proceeds_fund_buys": False},
+              "risk_checks": {"blocking_reasons": sorted(set(blockers)), "constraints_relaxed": False},
               "summary": {"selected_count": 0, "llm_calls": 0, "agent_tool_calls": 0}}
     if blockers:
         return result
-    if terminal_policy_obj is not None:
-        policy_symbols = list(terminal_policy_obj.core_symbols) + list(terminal_policy_obj.aggressive_symbols)
-        ordered = [symbol for symbol in policy_symbols if symbol in eligible]
-        # Existing holdings outside S4 are retained by the established
-        # disposition path; they must nevertheless be represented by policy.
-        if not set(retained) <= set(terminal_policy_obj.core_symbols):
-            blockers.append("TERMINAL_POLICY_RETAINED_HOLDING_MISMATCH")
-        if set(ordered) | set(retained) != set(policy_symbols):
-            blockers.append("TERMINAL_POLICY_ROLE_UNSATISFIED")
-    else:
-        ordered = sorted(eligible, key=lambda s: (-_decimal(indexed[s]["selection_score"], "score"), s))
+    ordered = sorted(eligible, key=lambda s: (-_decimal(indexed[s]["selection_score"], "score"), s))
     locked = [s for s in ordered if s in holdings and holdings[s].sellable_quantity < holdings[s].quantity]
     ordered = locked + [s for s in ordered if s not in locked]
     selected, clusters, sectors, hot_count = [], Counter(), Counter(), 0
     row_by = {row["symbol"]: row for row in rows}
-    if terminal_policy_obj is not None:
-        for symbol in retained:
-            row_by[symbol].update(terminal_role="CORE", role="CORE", same_day_exit_unavailable=False)
     for symbol in ordered:
         candidate = indexed[symbol]
         sector = candidate.get("sector_metadata", {})
@@ -389,82 +314,30 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
         clusters[cluster] += 1
         if sector_key:
             sectors[sector_key] += 1
-        role = (
-            "AGGRESSIVE" if terminal_policy_obj is not None and symbol in terminal_policy_obj.aggressive_symbols
-            else "CORE" if terminal_policy_obj is not None else ("AGGRESSIVE" if hot else "CORE")
-        )
-        row_by[symbol].update(
-            correlation_cluster=candidate["correlation_cluster"],
-            sector_metadata=sector,
-            role=role,
-            terminal_role=role if terminal_policy_obj is not None else None,
-            same_day_exit_unavailable=(
-                terminal_policy_obj is not None
-                and symbol in terminal_policy_obj.same_day_exit_unavailable
-            ),
-        )
-    if (len(selected) + len(retained) if terminal_policy_obj is not None else len(selected)) < risk["min_positions"]:
+        row_by[symbol].update(correlation_cluster=candidate["correlation_cluster"], sector_metadata=sector,
+                             role="AGGRESSIVE" if hot else "CORE")
+    if len(selected) < risk["min_positions"]:
         blockers.append("INSUFFICIENT_ELIGIBLE_POSITIONS")
-    if terminal_policy_obj is not None and len(selected) + len(retained) != terminal_policy_obj.total_position_count:
-        blockers.append("TERMINAL_POLICY_POSITION_COUNT")
     if blockers:
-        result["risk_checks"]["blocking_reasons"] = result_blockers()
+        result["risk_checks"]["blocking_reasons"] = sorted(set(blockers))
         return result
     prices = {s: _decimal(quote_by[s]["quote"]["price"], "price", positive=True) for s in set(selected) | set(holdings)}
     marked_asset = account.cash_balance + sum(prices[s] * p.quantity for s, p in holdings.items())
-    cash_target = (terminal_policy_obj.cash_target if terminal_policy_obj is not None
-                   else Decimal(str(risk["cash_buffer"])))
-    reserve = (marked_asset * cash_target).quantize(CENT, rounding=ROUND_CEILING)
+    reserve = (marked_asset * Decimal(str(risk["cash_buffer"]))).quantize(CENT, rounding=ROUND_CEILING)
     investable = marked_asset - reserve
-    name_cap_rate = (min(Decimal(str(risk["single_name_cap"])), terminal_policy_obj.max_single_weight)
-                     if terminal_policy_obj is not None else Decimal(str(risk["single_name_cap"])))
-    name_cap = marked_asset * name_cap_rate
+    name_cap = marked_asset * Decimal(str(risk["single_name_cap"]))
     role_counts = Counter(row_by[s]["role"] for s in selected)
     budgets = {}
     for s in selected:
         role = row_by[s]["role"]
-        share = (
-            terminal_policy_obj.core_budget if terminal_policy_obj is not None and role == "CORE"
-            else terminal_policy_obj.aggressive_budget if terminal_policy_obj is not None
-            else Decimal(str(settings["core_share" if role == "CORE" else "aggressive_share"]))
-        )
+        share = Decimal(str(settings["core_share" if role == "CORE" else "aggressive_share"]))
         budgets[s] = min(name_cap, investable * share / role_counts[role]).quantize(CENT, rounding=ROUND_FLOOR)
-    if terminal_policy_obj is not None:
-        for role, share in (("CORE", terminal_policy_obj.core_budget),
-                            ("AGGRESSIVE", terminal_policy_obj.aggressive_budget)):
-            requested_sleeve = (investable * share).quantize(CENT, rounding=ROUND_FLOOR)
-            available_sleeve = sum(budgets[s] for s in selected if row_by[s]["role"] == role)
-            if available_sleeve + CENT * role_counts.get(role, 0) < requested_sleeve:
-                blockers.append(f"TERMINAL_POLICY_{role}_CAPACITY")
-        if blockers:
-            result["risk_checks"].update(
-                blocking_reasons=result_blockers(),
-                cash_reserve=_money(reserve),
-                terminal_policy_no_cross_sleeve_redistribution=True,
-            )
-            return result
     # No speculative cash from unfilled sales is used to fund new purchases.
     buy_capacity = max(Decimal(0), min(account.available_cash, account.cash_balance - reserve))
     increments = {s: max(Decimal(0), budgets[s] - prices[s] * (holdings[s].quantity if s in holdings else 0))
                   for s in selected}
     requested_buys = sum(increments.values())
-    if terminal_policy_obj is not None:
-        requested_with_fees = sum(
-            increment + fees.charge("BUY", increment) for increment in increments.values()
-        )
-        if requested_with_fees > buy_capacity:
-            blockers.append("TERMINAL_POLICY_CASH_CONSTRAINT")
-            result["risk_checks"].update(
-                blocking_reasons=result_blockers(),
-                cash_reserve=_money(reserve),
-                available_cash_without_sale_fills=_money(buy_capacity),
-                requested_buy_cash=_money(requested_with_fees),
-                terminal_policy_no_cross_sleeve_redistribution=True,
-            )
-            return result
-        cash_scale = Decimal(1) if requested_buys else Decimal(0)
-    else:
-        cash_scale = min(Decimal(1), buy_capacity / requested_buys) if requested_buys else Decimal(0)
+    cash_scale = min(Decimal(1), buy_capacity / requested_buys) if requested_buys else Decimal(0)
     buy_cost = sell_net = costs = Decimal(0)
     plans = {}
     processing = selected + [s for s in sorted(holdings) if s not in selected]
@@ -474,9 +347,7 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
         current_value = current * prices[symbol]
         value = current_value if symbol in retained else budgets.get(symbol, Decimal(0))
         if value > current_value:
-            requested_increment = (increments[symbol] * cash_scale).quantize(CENT, rounding=ROUND_FLOOR)
-            increment = (requested_increment if terminal_policy_obj is not None
-                         else min(requested_increment, buy_capacity))
+            increment = min((increments[symbol] * cash_scale).quantize(CENT, rounding=ROUND_FLOOR), buy_capacity)
             fee_reserve = fees.charge("BUY", increment)
             value = current_value + max(Decimal(0), increment - fee_reserve)
         rules = quantity_rules(symbol, context.research_date)
@@ -512,8 +383,6 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
     final = selected_final + [s for s in sorted(retained) if plans[s]["target_quantity"] > 0]
     if not risk["min_positions"] <= len(final) <= risk["max_positions"]:
         blockers.append("FINAL_POSITION_COUNT")
-    if terminal_policy_obj is not None and len(final) != terminal_policy_obj.total_position_count:
-        blockers.append("TERMINAL_POLICY_FINAL_POSITION_COUNT")
     remaining_cash = account.cash_balance - buy_cost + sell_net
     if buy_capacity < 0 or remaining_cash < reserve or account.available_cash - buy_cost < 0:
         blockers.append("CASH_CONSTRAINT")
@@ -521,14 +390,10 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
     role_values = {role: sum(Decimal(plans[s]["target_market_value"]) for s in selected_final if row_by[s]["role"] == role)
                    for role in ("CORE", "AGGRESSIVE")}
     for role, value in role_values.items():
-        share = (
-            terminal_policy_obj.core_budget if terminal_policy_obj is not None and role == "CORE"
-            else terminal_policy_obj.aggressive_budget if terminal_policy_obj is not None
-            else Decimal(str(settings["core_share" if role == "CORE" else "aggressive_share"]))
-        )
+        share = Decimal(str(settings["core_share" if role == "CORE" else "aggressive_share"]))
         if value > investable * share:
             blockers.append(f"{role}_BUDGET_CONSTRAINT")
-    result["risk_checks"].update(blocking_reasons=result_blockers(),
+    result["risk_checks"].update(blocking_reasons=sorted(set(blockers)),
         weight_denominator="current_quote_marked_asset_before_estimated_costs",
         current_account_export_asset=_money(account.current_total_asset), marked_asset=_money(marked_asset),
         mark_to_market_change=_money(marked_asset - account.current_total_asset),
@@ -539,8 +404,7 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
         estimated_fees=_money(costs), max_single_weight=max((p["target_weight"] for p in plans.values()), default=0),
         role_values={k: _money(v) for k, v in role_values.items()}, cluster_counts=dict(clusters),
         sector_counts=[{"source": k[0], "classification": k[1], "value": k[2], "count": v} for k, v in sectors.items()],
-        sector_missing_count=sum(row_by[s].get("sector_metadata", {}).get("status") != "available" for s in final),
-        terminal_policy_no_cross_sleeve_redistribution=(terminal_policy_obj is not None))
+        sector_missing_count=sum(row_by[s].get("sector_metadata", {}).get("status") != "available" for s in final))
     if blockers:
         # Keep attempted math for diagnostics, not an executable target/order.
         result["risk_checks"]["attempted_plan_hash"] = content_hash(plans)
@@ -560,21 +424,4 @@ def build_portfolio(*, candidates, reviews, quotes, account: AccountSnapshot | N
     result["summary"].update(selected_count=len(final), account_hash=account.snapshot_hash,
                              fee_schedule_hash=content_hash(fees.to_dict()), requires_manual_confirmation=True,
                              must_revalidate_before_any_order=True, orders_submitted=0)
-    if terminal_shadow_active:
-        # A terminal-policy result is a strategy shadow artifact only.  Keep
-        # the deterministic math and role annotations for audit, but make it
-        # impossible for the existing execution-plan bridge to consume it.
-        result.update(status="PARTIAL", portfolio_status="NOT_READY",
-                      execution_ready=False, production_accepted=False)
-        result["risk_checks"]["blocking_reasons"] = result_blockers()
-        result["summary"].update(
-            terminal_policy_hash=(terminal_policy_obj.policy_hash if terminal_policy_obj is not None else None),
-            terminal_mode=(terminal_policy_obj.mode.value if terminal_policy_obj is not None else None),
-            terminal_mode_decision_hash=(
-                terminal_policy_obj.mode_decision_hash if terminal_policy_obj is not None else None
-            ),
-            terminal_funnel_hash=(terminal_policy_obj.funnel_hash if terminal_policy_obj is not None else None),
-            terminal_config_hash=(terminal_policy_obj.config_hash if terminal_policy_obj is not None else None),
-            terminal_shadow_only=True,
-        )
     return result

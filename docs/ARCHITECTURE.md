@@ -6,25 +6,32 @@
 Tushare + optional research sources
         ↓
 Competition research (Universe, S0-S5, evidence, AI review)
-        ├→ Terminal strategy (award line, mode, 10/5/2–3 funnel)
-        │       ↓ immutable evaluation + shadow-only portfolio attempt
-        ↓  vibe.research.v1
-Canonical workbench (account + quotes + fees + rules)
+        ↓ vibe.research.v1
+Canonical workbench (account + quotes + rules)
         ↓
-S6 plan → exact-hash human approval → guarded execution → reconciliation
+S6 → approval → execution → reconciliation
+
+Independent IPO sources → IPO_SPRINT snapshot → candidates/rejected JSON
+                              (never enters S0-S6 or execution)
 ```
 
 `src/vibe_trading` is the sole portfolio and execution authority. `research/`
 does not receive an approval, does not size broker quantities for the canonical
 application, and is not launched as a second Web trading service.
 
-The terminal-strategy branch is deliberately separate from canonical S6. It
-binds S4/S5, an uncommitted S5.5 observation, account, leaderboard, calendar and
-configuration hashes, but its allocation remains a research-only shadow. It
-cannot create an execution plan, approval, broker intent or order. Operators can
-use the bounded CLI without starting either Web service.
+The previously added terminal-strategy integration is disabled. The main
+research API does not mount terminal routes, there is no CLI entrypoint, and
+terminal calculations do not feed S6, the portfolio builder, approval, or
+execution. The normal research and S6 path therefore retains its original
+contracts and behavior.
 
-## Terminal strategy
+`competition_core.ipo_sprint` is a separate read-only route for newly listed
+stocks in their exchange-rule-sourced unbounded sessions. It collects its own
+identity, calendar, daily/liquidity, announcement risk review and live level-1
+facts. It writes an independent snapshot/result pair tagged `IPO_SPRINT` and
+does not update a research run, candidate stage, portfolio attempt or plan.
+
+## Disabled terminal-strategy experiment
 
 The terminal state machine selects `PROTECT`, `NORMAL`, `ATTACK` or
 `LAST_SHOT` from the buffered predicted award-line gap and remaining confirmed
@@ -39,11 +46,9 @@ in every mode. The configured competition calendar is immutable for the event;
 the runtime derives sessions on or after its explicit Shanghai observation date
 and rejects holidays or dates outside the confirmed window.
 
-`research/scripts/terminal-strategy.py` exposes status, input synchronization,
-evaluation, decision, candidate, history and shadow-plan commands. The plan
-command always reports `execution_ready=false`, `production_accepted=false` and
-`orders_submitted=0`. Research-side execution-plan construction separately
-rejects all terminal shadow markers, including forged readiness flags.
+The module retains deterministic mode and candidate calculations for internal
+research use. It has no public API or command-line entrypoint and does not build
+portfolio or execution artifacts.
 
 ## Research stages
 

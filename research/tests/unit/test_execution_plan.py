@@ -4,7 +4,6 @@ from contextlib import nullcontext
 from copy import deepcopy
 from datetime import date
 from decimal import Decimal
-import json
 
 import pytest
 
@@ -13,7 +12,6 @@ from competition_core.pipeline.artifacts import atomic_json, content_hash
 from competition_core.pipeline.errors import PipelineError
 from competition_core.pipeline.execution_plan import (
     PLAN_PATH,
-    _has_terminal_shadow,
     _plan_record,
     create_execution_plan,
     read_execution_plan,
@@ -204,49 +202,3 @@ def test_bridge_consumes_real_core_seal_structure_without_network_or_orders(tmp_
     assert plan["source"]["portfolio_attempt_id"] == "sealed-w6"
     assert plan["account"]["snapshot_hash"] == kwargs["account"].snapshot_hash
     assert plan["orders"] and plan["orders_submitted"] == 0
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"allocation_version": "inventory_sleeves.v1+terminal_shadow.v1"},
-        {"risk_checks": {"terminal_policy_shadow_only": True}},
-        {"risk_checks": {"blocking_reasons": ["TERMINAL_POLICY_SHADOW_ONLY"]}},
-        {"policy": {"terminal_shadow": {}}},
-        {"summary": {"terminal_evaluation_id": "a" * 64}},
-        {"terminal_evaluation_id": "a" * 64},
-    ],
-)
-def test_terminal_shadow_markers_are_detected_even_when_readiness_is_forged(payload):
-    forged = payload | {"execution_ready": True, "production_accepted": True}
-    assert _has_terminal_shadow(forged)
-
-
-def test_forged_terminal_shadow_portfolio_is_rejected_before_plan_derivation(tmp_path, monkeypatch):
-    repository, kwargs, status_source = prepared(tmp_path, monkeypatch)
-    imported = {"account": kwargs["account"].to_dict(), "fees": kwargs["fees"].to_dict()}
-    source_hash = content_hash(imported)
-    atomic_json(repository.directory / f"execution-imports/{source_hash}.json", imported, immutable=True)
-    atomic_json(repository.directory / "execution-inputs.json", {"id": source_hash})
-    run_execution_status_check(repository=repository, client=status_source,
-                               source_name="explicit.synthetic", account=kwargs["account"],
-                               clock=kwargs["clock"], status_id="synthetic-status")
-    monkeypatch.setattr("competition_core.pipeline.execution_plan._reject_demo", lambda *args: None)
-    monkeypatch.setattr("competition_core.pipeline.execution_plan._validate_news", lambda *args: {
-        "snapshot_hash": "1" * 64, "file_hash": "2" * 64, "review_inputs_hash": "3" * 64,
-        "status": "AVAILABLE",
-    })
-    run_portfolio_draft(**kwargs, status_id="synthetic-status", draft_id="terminal-forged",
-                        account_source_hash=source_hash)
-
-    portfolio_path = repository.directory / "portfolio.json"
-    portfolio = json.loads(portfolio_path.read_text(encoding="utf-8"))
-    portfolio["execution_ready"] = True
-    portfolio["production_accepted"] = True
-    portfolio["policy"] = dict(portfolio["policy"])
-    portfolio["policy"]["terminal_shadow"] = {"forged": True}
-    atomic_json(portfolio_path, portfolio)
-
-    with pytest.raises(PipelineError, match="terminal shadow") as error:
-        create_execution_plan(repository)
-    assert error.value.code == "NOT_READY"

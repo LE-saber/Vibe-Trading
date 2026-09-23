@@ -278,10 +278,6 @@ class RankingEntry(Contract):
     display_name: str = Field(max_length=80)
     rank: PositiveQty
     return_pct: SignedMoney
-    # Optional because the regular top-30 display contract historically only
-    # exposed return_pct. Terminal award-line logic must fail closed when the
-    # provider does not explicitly supply this authoritative asset field.
-    total_assets: Money | None = None
 
 
 class Leaderboard(Contract):

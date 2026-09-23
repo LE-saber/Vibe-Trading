@@ -26,13 +26,16 @@ No browser route accepts an arbitrary buy/sell payload. The static entrypoint
 audit checks that broker writes remain inside the canonical adapter and execution
 service.
 
-Terminal Tournament Strategy outputs are permanently shadow-only. Its CLI can
-read and content-address account, fee, order, leaderboard and quote evidence,
-but exposes no approve, execute, submit, cancel, force-mode or ignore-gate
-command. Terminal candidates never enter canonical `ResearchResult.targets` or
-the canonical `Plan` namespace. Both the terminal contracts and research
-execution-plan builder reject attempts to turn shadow output into executable
-orders.
+The terminal-strategy package has no public API or command-line entrypoint. It
+is not wired to S6, portfolio construction, approval, or execution, and its
+results cannot enter canonical `ResearchResult.targets` or the `Plan`
+namespace.
+
+The IPO sprint CLI is also read-only, but remains a separate route rather than
+an S6 input. It writes only standalone snapshot/result JSON, labels every row
+`IPO_SPRINT`, and declares outputs non-executable. Missing rule, identity, risk,
+liquidity or fresh two-sided quote evidence fails closed. It neither reads nor
+writes the normal research `runs` directory and contains no broker operation.
 
 Only local single-operator use on `127.0.0.1` is supported. TLS termination,
 multi-user authorization, remote hosting and unattended trading are outside this

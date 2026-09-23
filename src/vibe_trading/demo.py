@@ -79,12 +79,10 @@ class DemoProvider:
     def leaderboard(self) -> Leaderboard:
         return Leaderboard(competition_id="DEMO_COMPETITION", as_of=now_utc(),
                            entries=tuple(RankingEntry(participant_id=f"demo-{i}", display_name=f"DEMO Player {i:02}",
-                                                     rank=i, return_pct=Decimal("12.5")-Decimal(i)/10,
-                                                     total_assets=Decimal("100000") + Decimal(31-i)*Decimal("1000"))
+                                                     rank=i, return_pct=Decimal("12.5")-Decimal(i)/10)
                                          for i in range(1, 31)),
                            own=RankingEntry(participant_id="demo-owner", display_name="DEMO You", rank=117,
-                                            return_pct="2.4", total_assets="100000"),
-                           source_ref="DEMO: invented top-30, assets and own rank")
+                                            return_pct="2.4"), source_ref="DEMO: invented top-30 and own rank")
 
     def news(self) -> tuple[NewsItem, ...]:
         now = now_utc()

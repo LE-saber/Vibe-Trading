@@ -1,0 +1,11 @@
+version: ipo-sprint.v1
+quote:
+  max_age_seconds: 60
+risk:
+  max_age_seconds: 86400
+liquidity:
+  minimum_turnover_amount: 50000000
+  minimum_turnover_rate_pct: 1.0
+  minimum_volume_ratio: 1.0
+momentum:
+  minimum_return_pct: 10.0
