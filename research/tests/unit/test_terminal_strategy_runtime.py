@@ -1,6 +1,7 @@
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,9 +12,13 @@ from competition_core.terminal_strategy import (
     run_terminal_runtime,
 )
 from competition_core.terminal_strategy import TerminalStrategyConfigError
+from competition_core.terminal_strategy.runtime import _derive_remaining_trade_dates
 
 from test_terminal_strategy_pipeline_adapter import _inputs as _candidate_inputs
 from test_terminal_strategy_snapshot_adapter import _account_view, _leaderboard_view
+
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def _config(*, cutoff=30, dates=None):
@@ -153,3 +158,73 @@ def test_explicit_implementation_hash_changes_identity_and_no_execution_capabili
     assert first.evaluation_id != second.evaluation_id
     assert first.execution_ready is False
     assert first.evaluation is not None and first.evaluation.execution_ready is False
+
+
+@pytest.mark.parametrize(
+    ("observed_date", "expected"),
+    (
+        (date(2026, 9, 22), (date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 28), date(2026, 9, 29), date(2026, 9, 30))),
+        (date(2026, 9, 23), (date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 28), date(2026, 9, 29), date(2026, 9, 30))),
+        (date(2026, 9, 24), (date(2026, 9, 24), date(2026, 9, 28), date(2026, 9, 29), date(2026, 9, 30))),
+        (date(2026, 9, 28), (date(2026, 9, 28), date(2026, 9, 29), date(2026, 9, 30))),
+        (date(2026, 9, 30), (date(2026, 9, 30),)),
+    ),
+)
+def test_remaining_sessions_are_derived_from_explicit_observation(observed_date, expected):
+    reasons, blockers = [], []
+    result = _derive_remaining_trade_dates(
+        _config(), datetime.combine(observed_date, datetime.min.time(), tzinfo=SHANGHAI), reasons, blockers,
+    )
+    assert result == expected
+    assert reasons == []
+    assert blockers == []
+
+
+@pytest.mark.parametrize(
+    ("observed_date", "reason"),
+    (
+        (date(2026, 9, 21), "OBSERVED_TRADE_DATE_BEFORE_CALENDAR"),
+        (date(2026, 9, 25), "OBSERVED_TRADE_DATE_NOT_CONFIRMED_SESSION"),
+        (date(2026, 10, 1), "OBSERVED_TRADE_DATE_AFTER_FINAL_SESSION"),
+    ),
+)
+def test_unconfirmed_observation_date_fails_closed(observed_date, reason):
+    reasons, blockers = [], []
+    result = _derive_remaining_trade_dates(
+        _config(), datetime.combine(observed_date, datetime.min.time(), tzinfo=SHANGHAI), reasons, blockers,
+    )
+    assert result == ()
+    assert blockers == ["TRADE_DATE_NOT_IN_CALENDAR"]
+    assert reasons == [reason]
+
+
+def test_naive_observation_never_uses_wall_clock_for_calendar_derivation():
+    reasons, blockers = [], []
+    result = _derive_remaining_trade_dates(
+        _config(), datetime(2026, 9, 23), reasons, blockers,
+    )
+    assert result == ()
+    assert blockers == ["OBSERVED_AT_INVALID"]
+    assert reasons == []
+
+
+def test_runtime_persists_derived_sessions_after_first_day(tmp_path):
+    observed = datetime(2026, 9, 23, 13, 15, tzinfo=SHANGHAI)
+    account = _account()
+    account["account"]["as_of"] = observed.isoformat()
+    leaderboard = _leaderboard_view(as_of=observed)
+    values = _values(root=tmp_path, observed_at=observed, account_view=account, leaderboard_view=leaderboard)
+    result = run_terminal_runtime(**values)
+    assert result.evaluation is not None
+    assert result.evaluation.snapshot.remaining_trade_dates == (
+        date(2026, 9, 23), date(2026, 9, 24), date(2026, 9, 28),
+        date(2026, 9, 29), date(2026, 9, 30),
+    )
+    assert result.evaluation.snapshot.is_final_trade_date is False
+    assert result.evaluation.source_hashes.config_hash == _config().config_hash
+
+
+def test_calendar_derivation_does_not_change_config_hash():
+    first = _config()
+    second = TerminalStrategyConfig.from_dict(first.to_dict())
+    assert first.config_hash == second.config_hash

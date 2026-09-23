@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 import hashlib
 from pathlib import Path
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from contracts.symbol import CanonicalSymbol, SymbolContractError
 from competition_core.pipeline.artifacts import content_hash
@@ -43,6 +44,7 @@ from .snapshot_adapter import (
 
 
 _HASH = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 _IMPLEMENTATION_FILES = (
     "allocation.py",
     "award_line.py",
@@ -161,10 +163,11 @@ def run_terminal_runtime(
             blockers.append("IMPLEMENTATION_HASH_UNAVAILABLE")
 
     stage_hashes = _stage_hashes((s4_stage, s5_stage, s5_5_stage), blockers)
+    remaining_trade_dates = _derive_remaining_trade_dates(config, observed_at, reasons, blockers)
     snapshot_result = adapt_account_leaderboard_snapshot(
         account_view,
         leaderboard_view,
-        config.competition.remaining_trade_dates if isinstance(config, TerminalStrategyConfig) else (),
+        remaining_trade_dates,
         observed_at,
         config,
         freshness_threshold_seconds,
@@ -308,6 +311,61 @@ def _stage_hashes(stages: tuple[Any, ...], blockers: list[str]) -> tuple[tuple[s
     return tuple(result)
 
 
+def _derive_remaining_trade_dates(
+    config: TerminalStrategyConfig | Any,
+    observed_at: datetime,
+    reasons: list[str],
+    blockers: list[str],
+) -> tuple[date, ...]:
+    """Derive the sessions remaining from the confirmed competition window.
+
+    ``competition.remaining_trade_dates`` is the immutable, confirmed calendar
+    window from the competition configuration.  It is deliberately not passed
+    through unchanged: after each observed session, dates before that session
+    must disappear.  A date outside this window is never coerced to the nearest
+    session because doing so would silently turn weekends, holidays, pre-start
+    observations, and post-final observations into valid trading days.
+    """
+
+    if not isinstance(config, TerminalStrategyConfig):
+        blockers.append("CONFIG_INVALID")
+        return ()
+    if not isinstance(observed_at, datetime) or observed_at.utcoffset() is None:
+        blockers.append("OBSERVED_AT_INVALID")
+        return ()
+
+    observed_trade_date = observed_at.astimezone(_SHANGHAI).date()
+    calendar = config.competition.remaining_trade_dates
+    if (
+        not calendar
+        or any(not isinstance(item, date) or isinstance(item, datetime) for item in calendar)
+        or len(set(calendar)) != len(calendar)
+        or calendar != tuple(sorted(calendar))
+        or config.competition.final_trade_date not in calendar
+        or config.competition.final_trade_date != max(calendar)
+    ):
+        blockers.append("CALENDAR_INVALID")
+        reasons.append("CONFIRMED_TRADE_CALENDAR_INVALID")
+        return ()
+    if observed_trade_date not in calendar:
+        blockers.append("TRADE_DATE_NOT_IN_CALENDAR")
+        if observed_trade_date < calendar[0]:
+            reason = "OBSERVED_TRADE_DATE_BEFORE_CALENDAR"
+        elif observed_trade_date > config.competition.final_trade_date:
+            reason = "OBSERVED_TRADE_DATE_AFTER_FINAL_SESSION"
+        else:
+            reason = "OBSERVED_TRADE_DATE_NOT_CONFIRMED_SESSION"
+        reasons.append(reason)
+        return ()
+
+    remaining = tuple(item for item in calendar if item >= observed_trade_date)
+    if not remaining or remaining[-1] != config.competition.final_trade_date:
+        blockers.append("CALENDAR_INVALID")
+        reasons.append("FINAL_TRADE_DATE_NOT_PRESERVED")
+        return ()
+    return remaining
+
+
 def _normalise_hash_or_none(value: Any) -> str | None:
     if not isinstance(value, str) or _HASH.fullmatch(value) is None:
         return None
@@ -358,6 +416,7 @@ def _fatal_blockers(blockers: Iterable[str]) -> bool:
         "DUPLICATE_SYMBOL", "SYMBOL_INVALID", "OBSERVED_AT_INVALID", "CONFIG_INVALID", "STAGE_FUTURE",
         "ACCOUNT_VIEW_INVALID", "ACCOUNT_SCHEMA_INVALID", "LEADERBOARD_VIEW_INVALID",
         "LEADERBOARD_SCHEMA_INVALID", "SNAPSHOT_UNAVAILABLE", "REMAINING_DATES_INVALID",
+        "TRADE_DATE_NOT_IN_CALENDAR", "CALENDAR_INVALID",
         "SOURCE_HASH_MISSING", "CORE_SYMBOLS_INVALID", "CORE_SYMBOLS_MISSING",
         "REQUEST_INVALID",
     }

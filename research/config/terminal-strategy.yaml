@@ -6,6 +6,8 @@ competition:
   award_rank_cutoff: null
   award_rule_source: null
   final_trade_date: "2026-09-30"
+  # Confirmed competition trading-calendar window. Runtime derives the
+  # sessions on/after the explicit observed_at date; do not edit daily.
   remaining_trade_dates:
     - "2026-09-22"
     - "2026-09-23"

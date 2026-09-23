@@ -34,6 +34,10 @@ class TerminalCompetitionConfig:
     ``award_rank_cutoff`` is intentionally nullable.  A null value is a safe,
     explicit "rules not confirmed" state, not a default to the displayed Top
     30.  The state machine will remain ``UNAVAILABLE`` in that state.
+
+    ``remaining_trade_dates`` is the confirmed competition trading-calendar
+    window, not a value to edit after every session.  The terminal runtime
+    derives the sessions on or after its explicit aware ``observed_at`` date.
     """
 
     award_rank_cutoff: int | None
