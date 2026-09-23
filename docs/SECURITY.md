@@ -26,6 +26,14 @@ No browser route accepts an arbitrary buy/sell payload. The static entrypoint
 audit checks that broker writes remain inside the canonical adapter and execution
 service.
 
+Terminal Tournament Strategy outputs are permanently shadow-only. Its CLI can
+read and content-address account, fee, order, leaderboard and quote evidence,
+but exposes no approve, execute, submit, cancel, force-mode or ignore-gate
+command. Terminal candidates never enter canonical `ResearchResult.targets` or
+the canonical `Plan` namespace. Both the terminal contracts and research
+execution-plan builder reject attempts to turn shadow output into executable
+orders.
+
 Only local single-operator use on `127.0.0.1` is supported. TLS termination,
 multi-user authorization, remote hosting and unattended trading are outside this
 release.
