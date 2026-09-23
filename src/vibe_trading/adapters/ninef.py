@@ -492,10 +492,21 @@ class NinefProvider:
         rank = _integer(item.get("rank"), "ranking rank")
         if rank <= 0:
             raise NinefError("ranking rank must be positive")
+        total_assets_raw = _first(
+            item, {},
+            "totalAssets",
+            "totalAsset",
+            "assetValue",
+            "total_assets",
+        )
+        total_assets = None if total_assets_raw is None else _decimal(
+            total_assets_raw, "ranking total assets"
+        )
         return RankingEntry(
             participant_id=_participant_id(item.get("userId") or item.get("displayName") or rank),
             display_name=str(item.get("displayName") or ""), rank=rank,
             return_pct=_pct(item.get("metricText")),
+            total_assets=total_assets,
         )
 
     def leaderboard(self) -> Leaderboard:

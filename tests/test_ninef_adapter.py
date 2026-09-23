@@ -194,10 +194,32 @@ def test_top_30_and_own_rank_are_independent_and_news_is_paginated():
     assert len(board.entries) == 30
     assert board.entries[-1].rank == 30
     assert board.own.rank == 88
+    assert all(entry.total_assets is None for entry in board.entries)
+    assert board.own.total_assets is None
     news = provider.news()
     assert len(news) == 2
     assert news[1].symbols == ("600001.SH",)
     assert all(item.news_id.startswith("ninef-news-") for item in news)
+
+
+def test_leaderboard_keeps_explicit_total_assets_without_inference():
+    class WithAssets(FakeTransport):
+        def request(self, method, path, *, params=None, body=None):
+            result = super().request(method, path, params=params, body=body)
+            if path.endswith("competition-gate/status"):
+                result["data"]["leaderboard"]["items"][0]["totalAssets"] = "123456.78"
+                result["data"]["leaderboard"]["items"][1]["totalAsset"] = "123000"
+                result["data"]["leaderboard"]["items"][2]["meta"] = {
+                    "totalAssets": "122000"
+                }
+                result["data"]["leaderboard"]["currentUser"]["totalAssets"] = "100000"
+            return result
+
+    board = NinefProvider(WithAssets()).leaderboard()
+    assert board.entries[0].total_assets == Decimal("123456.78")
+    assert board.entries[1].total_assets == Decimal("123000")
+    assert board.entries[2].total_assets is None
+    assert board.own.total_assets == Decimal("100000")
 
 
 def test_oversized_news_is_bounded_and_marked_without_losing_the_item():
