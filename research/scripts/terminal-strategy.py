@@ -7,6 +7,8 @@ Prerequisites:
 * ``evaluate`` requires S4/S5 plus a saved, verified realtime observation.
   It reads a verified imported Ninef account when available and otherwise uses
   the read-only Ninef fallback.
+* ``sync-inputs`` reads the current Ninef account, fee schedule and complete
+  order receipt into the run's content-addressed execution-input store.
 * ``plan`` additionally requires a complete terminal evaluation, the latest
   realtime and execution-status observations, and complete imported Ninef
   account/fee inputs.  It creates a shadow portfolio attempt only.
@@ -81,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="show terminal status globally or for one run")
     add_command_runs_root(status)
     status.add_argument("run_id", nargs="?", help="optional research run identifier")
+
+    sync_inputs = commands.add_parser(
+        "sync-inputs", help="import the verified read-only Ninef account inputs"
+    )
+    add_command_runs_root(sync_inputs)
+    sync_inputs.add_argument("run_id")
 
     evaluate = commands.add_parser("evaluate", help="evaluate server-owned terminal facts")
     add_command_runs_root(evaluate)
@@ -210,6 +218,26 @@ def _evaluate(root: Path, run_id: str) -> dict[str, Any]:
     )
 
 
+def _sync_inputs(root: Path, run_id: str) -> dict[str, Any]:
+    """Import only server-read Ninef execution inputs and return a bounded view."""
+
+    result = _tasks(root).import_ninef_execution_inputs(_run_id(run_id))
+    return {
+        key: result[key]
+        for key in (
+            "run_id",
+            "input_id",
+            "source_kind",
+            "as_of",
+            "provider",
+            "position_count",
+            "pending_order_count",
+            "execution_ready",
+            "orders_submitted",
+        )
+    }
+
+
 def _plan(root: Path, run_id: str, evaluation_id: str | None) -> dict[str, Any]:
     from competition_core.research_portfolio import create_terminal_shadow_plan
 
@@ -224,6 +252,8 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
     root = _runs_root(args.runs_root)
     if args.command == "status":
         return _read_status(root, args.run_id)
+    if args.command == "sync-inputs":
+        return _sync_inputs(root, args.run_id)
     if args.command == "evaluate":
         return _evaluate(root, args.run_id)
     if args.command == "decision":

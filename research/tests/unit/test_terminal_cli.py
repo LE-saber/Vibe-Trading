@@ -54,6 +54,8 @@ def test_parser_exposes_only_read_only_terminal_commands_and_accepts_global_root
                    for action in module.build_parser()._actions)
     with pytest.raises(module._CLIUsageError):
         module.build_parser().parse_args(["approve", "run-1"])
+    sync = module.build_parser().parse_args(["sync-inputs", "run-1"])
+    assert sync.command == "sync-inputs"
 
 
 def test_read_views_use_hash_verified_persistence(tmp_path):
@@ -115,6 +117,60 @@ def test_evaluate_uses_shared_runtime_and_readers(monkeypatch, tmp_path):
     assert body["execution_ready"] is False
     assert body["orders_submitted"] == 0
     assert calls == {"account": 1, "leaderboard": 1}
+
+
+def test_sync_inputs_calls_research_task_import_and_redacts_receipt(monkeypatch, tmp_path):
+    module = _module()
+    calls = {}
+
+    def import_inputs(self, run_id):
+        calls["run_id"] = run_id
+        return {
+            "run_id": run_id,
+            "input_id": "a" * 64,
+            "source_kind": "NINEF",
+            "as_of": "2026-09-23T10:00:00+08:00",
+            "provider": "ninef",
+            "position_count": 5,
+            "pending_order_count": 1,
+            "execution_ready": False,
+            "orders_submitted": 0,
+            "token": "must-not-appear",
+            "source_receipt": {"order_id": "must-not-appear"},
+        }
+
+    monkeypatch.setattr(ResearchTasks, "import_ninef_execution_inputs", import_inputs)
+    output = module._sync_inputs(tmp_path / "runs", "run-1")
+    assert calls == {"run_id": "run-1"}
+    assert output == {
+        "run_id": "run-1",
+        "input_id": "a" * 64,
+        "source_kind": "NINEF",
+        "as_of": "2026-09-23T10:00:00+08:00",
+        "provider": "ninef",
+        "position_count": 5,
+        "pending_order_count": 1,
+        "execution_ready": False,
+        "orders_submitted": 0,
+    }
+    assert "token" not in json.dumps(output)
+    assert "source_receipt" not in json.dumps(output)
+
+
+@pytest.mark.parametrize("code", ["NOT_CONFIGURED", "SOURCE_UNAVAILABLE"])
+def test_sync_inputs_source_failures_are_redacted(monkeypatch, capsys, code):
+    module = _module()
+
+    def failure(self, run_id):
+        raise PipelineError(code, "provider token=secret-receipt")
+
+    monkeypatch.setattr(ResearchTasks, "import_ninef_execution_inputs", failure)
+    assert module.main(["sync-inputs", "run-1"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    payload = json.loads(captured.err)
+    assert payload["error"]["code"] == code
+    assert "secret-receipt" not in captured.err
 
 
 def test_plan_delegates_only_to_shadow_helper(monkeypatch, tmp_path):
